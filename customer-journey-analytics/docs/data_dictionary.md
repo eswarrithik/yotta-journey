@@ -48,7 +48,7 @@ Append-only event history; retain event occurrence and original ingestion timest
 | `channel` | `VARCHAR(16)` | Yes | `website`, `mobile_app` | Event source channel. |
 | `page_id` | `VARCHAR(16)` | No | FK → pages | Page involved where applicable. |
 | `product_id` | `VARCHAR(16)` | No | FK → products | Product involved where applicable. |
-| `event_properties` | `JSONB` | Yes | defaults `{}` | Typed-by-version source properties; never place ground-truth labels here. |
+| `event_properties` | `JSONB` | Yes | defaults `{}` | Typed-by-version source properties; purchase events carry the stable `order_id` here for idempotent duplicate-conversion detection. Never place ground-truth labels here. |
 | `event_version` | `VARCHAR(12)` | Yes | non-empty schema version, e.g. `1.0` | Event payload contract version. |
 
 Expected taxonomy attributes: `session_started` has no required page/product; `page_viewed` and `product_viewed` use `page_id`; `product_viewed`, `added_to_cart`, and `purchase_completed` use `product_id`; checkout/payment/support events may carry relevant page or case properties. Session `1 → N` events; page/product `1 → 0..N` events.

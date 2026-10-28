@@ -27,6 +27,7 @@ def generate_demo_data(seed: int = 20261022, session_count: int = 100) -> dict[s
             "lifecycle_state": ["active"] * 55,
         }
     )
+    products = pd.DataFrame([{"product_id": f"PRD-{i:06d}", "product_name": f"JourneyIQ product {i}", "category": ["Fitness", "Wellness", "Accessories"][i % 3]} for i in range(1, 13)])
     sessions: list[dict] = []
     events: list[dict] = []
     orders: list[dict] = []
@@ -35,6 +36,7 @@ def generate_demo_data(seed: int = 20261022, session_count: int = 100) -> dict[s
 
     for number in range(1, session_count + 1):
         sid = f"SES-2026-{number:06d}"
+        product_id = f"PRD-{((number - 1) % len(products)) + 1:06d}"
         channel = "Website" if rng.random() < 0.68 else "Mobile app"
         device = str(rng.choice(["Desktop", "Mobile", "Tablet"], p=[0.34, 0.56, 0.10]))
         bot = False if number == 1 else number in {9, 31, 68} or rng.random() < 0.025
@@ -48,6 +50,7 @@ def generate_demo_data(seed: int = 20261022, session_count: int = 100) -> dict[s
         sessions.append(
             {
                 "session_id": sid,
+                "product_id": product_id,
                 "customer_id": customer_id,
                 "anonymous_id": anonymous_id,
                 "started_at": started,
@@ -85,6 +88,7 @@ def generate_demo_data(seed: int = 20261022, session_count: int = 100) -> dict[s
                     "customer_id": customer_id,
                     "anonymous_id": anonymous_id,
                     "event_type": event_type,
+                    "product_id": product_id if event_type in {"product_viewed", "added_to_cart", "purchase_completed"} else None,
                     "event_timestamp": occurred,
                     "ingestion_timestamp": occurred + timedelta(seconds=latency),
                     "latency_seconds": latency,
@@ -99,6 +103,7 @@ def generate_demo_data(seed: int = 20261022, session_count: int = 100) -> dict[s
             orders.append(
                 {
                     "order_id": order_id,
+                    "product_id": product_id,
                     "session_id": sid,
                     "customer_id": customer_id,
                     "ordered_at": started + timedelta(minutes=4),
@@ -151,10 +156,11 @@ def generate_demo_data(seed: int = 20261022, session_count: int = 100) -> dict[s
     ground_truth_frame = pd.DataFrame(ground_truth, columns=["entity_id", "issue_type"]).drop_duplicates().sort_values(["entity_id", "issue_type"], kind="stable").reset_index(drop=True)
     event_frame = pd.DataFrame(events).sort_values("event_id", kind="stable").reset_index(drop=True)
     session_frame = pd.DataFrame(sessions).sort_values("session_id", kind="stable").reset_index(drop=True)
-    order_frame = pd.DataFrame(orders, columns=["order_id", "session_id", "customer_id", "ordered_at", "status", "total_amount"])
+    order_frame = pd.DataFrame(orders, columns=["order_id", "product_id", "session_id", "customer_id", "ordered_at", "status", "total_amount"])
     support_frame = pd.DataFrame(support, columns=["ticket_id", "session_id", "reason"])
     return {
         "customers": customers,
+        "products": products,
         "sessions": session_frame,
         "events": event_frame,
         "orders": order_frame,
@@ -177,13 +183,15 @@ def _page_for(event_type: str) -> str | None:
     }.get(event_type)
 
 
-def filtered_sessions(data: dict[str, pd.DataFrame], channel: str = "All channels", device: str = "All devices") -> pd.DataFrame:
+def filtered_sessions(data: dict[str, pd.DataFrame], channel: str = "All channels", device: str = "All devices", product: str = "All products") -> pd.DataFrame:
     sessions = data["sessions"]
     mask = pd.Series(True, index=sessions.index)
     if channel != "All channels":
         mask &= sessions.channel.eq(channel)
     if device != "All devices":
         mask &= sessions.device.eq(device)
+    if product != "All products":
+        mask &= sessions.product_id.eq(product)
     return sessions.loc[mask].copy()
 
 
@@ -243,6 +251,9 @@ def validate_sample(data: dict[str, pd.DataFrame], sessions: pd.DataFrame) -> di
         "session_ids_unique": bool(data["sessions"].session_id.is_unique),
         "event_ids_unique": bool(data["events"].event_id.is_unique),
         "event_session_foreign_keys": bool(data["events"].session_id.isin(data["sessions"].session_id).all()),
+        "session_product_foreign_keys": bool(data["sessions"].product_id.isin(data["products"].product_id).all()),
+        "event_product_foreign_keys": bool(data["events"].product_id.dropna().isin(data["products"].product_id).all()),
+        "order_product_foreign_keys": bool(data["orders"].product_id.isin(data["products"].product_id).all()),
         "event_latency_nonnegative": bool(latency.ge(0).all()),
         "funnel_monotonic": bool(funnel.sessions.is_monotonic_decreasing),
         "order_session_foreign_keys": bool(data["orders"].session_id.isin(data["sessions"].session_id).all()),

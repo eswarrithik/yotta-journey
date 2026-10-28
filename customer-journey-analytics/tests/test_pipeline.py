@@ -1,4 +1,3 @@
-import hashlib
 import json
 import sys
 from pathlib import Path
@@ -8,7 +7,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 from yottajourney.analytics import analyze, detect_anomalies, evaluate_detection
-from yottajourney.pipeline import Config, generate
+from yottajourney.pipeline import Config, generate, verify_reproducibility
 
 
 @pytest.fixture(scope="module")
@@ -17,15 +16,11 @@ def starter(tmp_path_factory):
     return generate(Config(), output), output
 
 
-def csv_hashes(directory):
-    return {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in sorted(directory.glob("*.csv"))}
-
-
 def test_default_starter_profile_and_entity_contract(starter):
     result, output = starter
     tables = result["tables"]
     assert len(tables["sessions"]) == 100
-    assert 1500 <= len(tables["journey_events"]) <= 2600
+    assert len(tables["journey_events"]) == 2_000
     assert len(tables) == 12
     assert result["validation"]["status"] == "passed"
     assert all(result["validation"]["checks"].values())
@@ -77,6 +72,8 @@ def test_timestamp_contract_timeout_and_funnel_denominators(starter):
     grouped = events.groupby("session_id").event_timestamp.agg(["min", "max"])
     assert (pd.to_datetime(grouped["min"], utc=True) == pd.to_datetime(session_times.loc[grouped.index, "started_at"], utc=True)).all()
     assert (pd.to_datetime(session_times.loc[grouped.index, "ended_at"], utc=True) >= pd.to_datetime(grouped["max"], utc=True)).all()
+    durations = pd.to_datetime(tables["sessions"].ended_at, utc=True) - pd.to_datetime(tables["sessions"].started_at, utc=True)
+    assert durations.max() < pd.Timedelta(minutes=30)
     result_metrics = analyze(tables)
     eligible = tables["sessions"].loc[~tables["sessions"].is_bot, "session_id"].nunique()
     assert result_metrics["eligible_sessions"] == eligible
@@ -94,8 +91,9 @@ def test_duplicate_source_events_do_not_inflate_order_or_conversion_counts(start
     tables = result["tables"]
     metrics = analyze(tables)
     purchases = tables["journey_events"].query("event_type == 'purchase_completed'")
+    purchase_order_ids = purchases.event_properties.map(lambda value: json.loads(value).get("order_id"))
     assert purchases.event_id.is_unique
-    assert purchases.order_id.nunique() < len(purchases)
+    assert purchase_order_ids.nunique() < len(purchases)
     assert metrics["purchase_order_count"] == tables["orders"].query("status == 'paid'").order_id.nunique()
     assert metrics["purchases"] <= metrics["eligible_sessions"]
 
@@ -140,18 +138,30 @@ def test_cart_order_reconciliation_and_lifecycle_outcomes(starter):
     assert bot_sessions.issubset(bot_outcomes)
 
 
+def test_csv_output_is_independent_of_event_buffer_size(tmp_path):
+    import hashlib
+
+    outputs = [tmp_path / "small-buffer", tmp_path / "large-buffer"]
+    generate(Config(seed=20261022, sessions=30, customers=20, chunk_size=64), outputs[0])
+    generate(Config(seed=20261022, sessions=30, customers=20, chunk_size=257), outputs[1])
+    for name in ["journey_events.csv", "sessions.csv", "ground_truth.csv"]:
+        hashes = [hashlib.sha256((output / name).read_bytes()).hexdigest() for output in outputs]
+        assert hashes[0] == hashes[1]
+
+
 def test_reproducibility_compares_same_full_profile_and_serialized_datasets(tmp_path):
-    first_dir = tmp_path / "first"
-    second_dir = tmp_path / "second"
-    config = Config(seed=20261022, sessions=30, customers=20)
-    first = generate(config, first_dir)
-    second = generate(config, second_dir)
-    assert csv_hashes(first_dir) == csv_hashes(second_dir)
-    assert first["validation"]["funnel_counts"] == second["validation"]["funnel_counts"]
-    first_manifest = json.loads((first_dir / "reproducibility.json").read_text())
-    assert first_manifest["comparison_scope"].startswith("Full generated profile")
-    assert "generated ground_truth.csv" in first_manifest["compared_datasets"]
-    assert first_manifest["entity_row_counts"]["sessions"] == 30
+    output = tmp_path / "starter"
+    comparison = verify_reproducibility(Config(seed=20261022, sessions=30, customers=20), output)
+    assert comparison["row_counts_match"]
+    assert comparison["sha256_match"]
+    assert comparison["derived_metrics_match"]
+    assert comparison["anomaly_counts_match"]
+    assert comparison["identical"]
+    assert comparison["full_profile_only"]
+    assert "ground_truth.csv" in comparison["datasets_compared"]
+    manifest = json.loads((output / "reproducibility.json").read_text())
+    assert manifest["comparison"]["identical"]
+    assert manifest["entity_row_counts"]["sessions"] == 30
 
 
 def test_date_and_channel_filters_propagate_to_funnel_and_support(starter):
@@ -166,8 +176,19 @@ def test_date_and_channel_filters_propagate_to_funnel_and_support(starter):
     assert recent["support_sessions"] <= recent["sessions"]
 
 
+def test_product_filter_changes_the_analytics_cohort(starter):
+    tables = starter[0]["tables"]
+    product_id = tables["products"].product_id.iloc[0]
+    expected = set(tables["journey_events"].loc[tables["journey_events"].product_id.eq(product_id), "session_id"])
+    filtered = analyze(tables, product_id=product_id)
+    assert filtered["sessions"] == len(expected)
+    assert filtered["funnel"][0]["sessions"] == filtered["eligible_sessions"]
+    assert filtered["support_sessions"] <= filtered["sessions"]
+
+
 def test_full_profile_configuration_is_exact_but_not_performance_claim():
     config = Config.full(seed=20261022)
     assert config.sessions == 100_000
+    assert config.sessions * 20 == 2_000_000
     assert config.seed == 20261022
     assert config.chunk_size > 0

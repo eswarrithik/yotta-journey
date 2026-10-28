@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import sys
 
 import pandas as pd
@@ -73,13 +74,15 @@ st.sidebar.divider()
 st.sidebar.markdown("#### Filters")
 channel_filter = st.sidebar.selectbox("Channel", ["All channels", "Website", "Mobile app"])
 device_filter = st.sidebar.selectbox("Device", ["All devices", "Desktop", "Mobile", "Tablet"])
+product_names = dict(zip(data["products"].product_id, data["products"].product_name))
+product_filter = st.sidebar.selectbox("Product", ["All products", *product_names], format_func=lambda value: value if value == "All products" else product_names[value])
 days_filter = st.sidebar.select_slider("Date range", options=[7, 14, 30], value=30, format_func=lambda days: f"Last {days} days")
 st.sidebar.caption("Filters update every metric and chart in this view.")
 st.sidebar.divider()
 st.sidebar.markdown("**Source profile**")
 st.sidebar.caption(f"DEMO DATA · {len(data['sessions']):,} generated sessions · {len(data['events']):,} generated events · seed 20261022")
 
-sessions = filtered_sessions(data, channel_filter, device_filter)
+sessions = filtered_sessions(data, channel_filter, device_filter, product_filter)
 cutoff = data["sessions"].started_at.max() - pd.Timedelta(days=days_filter)
 sessions = sessions[sessions.started_at >= cutoff].copy()
 eligible_ids = set(sessions.session_id)
@@ -102,7 +105,7 @@ session_count = int(sessions.session_id.nunique())
 eligible_session_count = len(entry_ids)
 cart_ids = set(filtered_data["events"].loc[filtered_data["events"].event_type.eq("added_to_cart") & filtered_data["events"].session_id.isin(entry_ids), "session_id"])
 last_activity = filtered_data["events"].groupby("session_id").event_timestamp.max()
-as_of = filtered_data["events"].event_timestamp.max()
+as_of = data["events"].event_timestamp.max()
 mature_cart_ids = {sid for sid in cart_ids if pd.notna(last_activity.get(sid)) and as_of - last_activity[sid] >= pd.Timedelta(minutes=30)} if pd.notna(as_of) else set()
 abandoned_carts = len(mature_cart_ids - purchase_ids)
 abandonment_rate = abandoned_carts / len(mature_cart_ids) if mature_cart_ids else 0.0
@@ -115,9 +118,11 @@ st.markdown(
 )
 st.title(section)
 st.markdown(
-    f'<p class="section-intro">Customer journey intelligence · filtered {session_count:,}/{len(data["sessions"]):,} sessions · {len(filtered_data["events"]):,}/{len(data["events"]):,} events</p>',
+    f'<p class="section-intro">Customer journey intelligence · filtered {session_count:,}/{len(data["sessions"]):,} sessions · {len(filtered_data["events"]):,}/{len(data["events"]):,} events · product {product_filter}</p>',
     unsafe_allow_html=True,
 )
+if session_count == 0:
+    st.info("No sessions match the active date, channel, device, and product filters. Widen the date range or reset the cohort filters.")
 
 
 def show_kpis():
@@ -281,4 +286,8 @@ elif section == "Data quality":
         st.error("Failed checks: " + ", ".join(validation["errors"]))
 
 st.divider()
+filtered_event_json = json.dumps({"dataset": "JourneyIQ DEMO DATA", "filters": {"channel": channel_filter, "device": device_filter, "product": product_filter, "days": days_filter}, "generated_sessions": len(data["sessions"]), "filtered_sessions": len(sessions), "generated_events": len(data["events"]), "filtered_events": len(filtered_data["events"]), "events": json.loads(filtered_data["events"].to_json(orient="records", date_format="iso"))}, indent=2)
+left_export, right_export = st.columns(2)
+left_export.download_button("Export filtered events CSV", filtered_data["events"].to_csv(index=False).encode("utf-8"), file_name="journeyiq_demo_filtered_events.csv", mime="text/csv")
+right_export.download_button("Export filtered events JSON", filtered_event_json.encode("utf-8"), file_name="journeyiq_demo_filtered_events.json", mime="application/json")
 st.caption("JourneyIQ · Customer Journey Analytics · DEMO DATA · Deterministic sample seed 20261022")

@@ -17,6 +17,7 @@ def analyze(
     tables: dict[str, pd.DataFrame],
     channel: str = "All",
     device: str = "All",
+    product_id: str = "All",
     start_at=None,
     end_at=None,
     as_of=None,
@@ -26,6 +27,9 @@ def analyze(
         sessions = sessions[sessions.channel.eq(channel)]
     if device != "All":
         sessions = sessions[sessions.device_type.eq(device)]
+    if product_id != "All":
+        product_sessions = set(tables["journey_events"].loc[tables["journey_events"].product_id.eq(product_id), "session_id"])
+        sessions = sessions[sessions.session_id.isin(product_sessions)]
     if start_at is not None:
         sessions = sessions[pd.to_datetime(sessions.started_at, utc=True).ge(pd.Timestamp(start_at, tz="UTC") if pd.Timestamp(start_at).tzinfo is None else pd.Timestamp(start_at))]
     if end_at is not None:
@@ -139,7 +143,8 @@ def detect_anomalies(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
         elif pd.notna(session.customer_id) and group.customer_id.dropna().ne(session.customer_id).any():
             found.append((session_id, "identity_stitching"))
         purchases = group[group.event_type.eq("purchase_completed")]
-        if purchases.order_id.dropna().duplicated(keep=False).any():
+        purchase_order_ids = purchases.event_properties.map(lambda value: json.loads(value).get("order_id"))
+        if purchase_order_ids.dropna().duplicated(keep=False).any():
             found.append((session_id, "duplicate_conversion"))
         bot_signal = any(json.loads(value).get("bot_signal", False) for value in group.event_properties)
         if bool(session.get("is_bot", False)) or bot_signal:

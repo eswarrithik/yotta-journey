@@ -36,6 +36,8 @@ st.sidebar.caption(f"{profile} · Seed {json.loads((root / 'reproducibility.json
 page = st.sidebar.radio("Workspace", ["Executive Overview", "Customer Journey Funnel", "Friction Analysis", "Channel Analysis", "Anomaly Monitoring", "Data Quality"])
 channel = st.sidebar.selectbox("Channel", ["All", "website", "mobile_app"])
 device = st.sidebar.selectbox("Device", ["All", "desktop", "mobile", "tablet"])
+product_names = dict(zip(tables["products"].product_id, tables["products"].product_name))
+product_id = st.sidebar.selectbox("Product", ["All", *product_names], format_func=lambda value: "All products" if value == "All" else product_names[value])
 days = st.sidebar.selectbox("Date range", [7, 30, 90], index=1, format_func=lambda value: f"Last {value} days")
 latest = tables["sessions"].started_at.max()
 cutoff = latest - pd.Timedelta(days=days)
@@ -44,6 +46,9 @@ if channel != "All":
     filtered_sessions = filtered_sessions[filtered_sessions.channel.eq(channel)]
 if device != "All":
     filtered_sessions = filtered_sessions[filtered_sessions.device_type.eq(device)]
+if product_id != "All":
+    matching_products = set(tables["journey_events"].loc[tables["journey_events"].product_id.eq(product_id), "session_id"])
+    filtered_sessions = filtered_sessions[filtered_sessions.session_id.isin(matching_products)]
 filtered_sessions = filtered_sessions[filtered_sessions.started_at.ge(cutoff)]
 filtered_ids = set(filtered_sessions.session_id)
 filtered_tables = dict(tables)
@@ -52,11 +57,13 @@ filtered_tables["journey_events"] = tables["journey_events"][tables["journey_eve
 filtered_tables["orders"] = tables["orders"][tables["orders"].session_id.isin(filtered_ids)]
 filtered_tables["carts"] = tables["carts"][tables["carts"].session_id.isin(filtered_ids)]
 filtered_tables["support_tickets"] = tables["support_tickets"][tables["support_tickets"].session_id.isin(filtered_ids)]
-result = analyze(tables, channel, device, start_at=cutoff, as_of=latest)
+result = analyze(tables, channel, device, product_id=product_id, start_at=cutoff, as_of=tables["journey_events"].event_timestamp.max())
 
-st.markdown(f"**{profile}** · Seed 20261022 · active filters: {days} days, {channel}, {device}")
+st.markdown(f"**{profile}** · Seed 20261022 · active filters: {days} days, {channel}, {device}, {product_id}")
 st.title(page)
 st.caption(f"Filtered {result['sessions']:,} / {len(tables['sessions']):,} sessions · {len(filtered_tables['journey_events']):,} / {len(tables['journey_events']):,} events")
+if result["sessions"] == 0:
+    st.info("No sessions match the active date, channel, device, and product filters. Broaden the date range or reset the cohort filters.")
 
 
 def show_kpis():
@@ -139,6 +146,13 @@ elif page == "Data Quality":
     report_path = root / "validation_report.json"
     if report_path.exists():
         report = json.loads(report_path.read_text())
+        reproducibility = json.loads((root / "reproducibility.json").read_text()).get("comparison")
+        if reproducibility is None:
+            st.warning("Paired SHA-256 reproducibility has not been run for this output. Run `python -m yottajourney.pipeline --output data --seed 20261022 --verify-reproducibility` from the project folder.")
+        elif reproducibility["identical"]:
+            st.success(f"Paired reproducibility passed: {len(reproducibility['datasets_compared'])} canonical CSV files, row counts, derived metrics, and anomaly counts match.")
+        else:
+            st.error("Paired reproducibility comparison found a mismatch; see the report below.")
         if report["status"] == "passed":
             st.success("Structural integrity checks passed for the full generated dataset.")
         else:
@@ -159,6 +173,10 @@ elif page == "Data Quality":
         st.error("Validation report is missing. Regenerate the dataset to produce structural checks and a reproducibility manifest.")
 
 st.divider()
-csv_bytes = filtered_tables["journey_events"].to_csv(index=False).encode("utf-8")
-st.download_button("Export filtered events CSV", csv_bytes, file_name="journeyiq_filtered_events.csv", mime="text/csv", help=f"{profile}; {len(filtered_tables['journey_events']):,} rows after the current date, channel, and device filters.")
+filtered_events = filtered_tables["journey_events"]
+csv_bytes = filtered_events.to_csv(index=False).encode("utf-8")
+json_bytes = json.dumps({"dataset": profile, "filters": {"days": days, "channel": channel, "device": device, "product_id": product_id}, "generated_sessions": len(tables["sessions"]), "filtered_sessions": len(filtered_sessions), "generated_events": len(tables["journey_events"]), "filtered_events": len(filtered_events), "events": json.loads(filtered_events.to_json(orient="records", date_format="iso"))}, indent=2).encode("utf-8")
+left_export, right_export = st.columns(2)
+left_export.download_button("Export filtered events CSV", csv_bytes, file_name="journeyiq_filtered_events.csv", mime="text/csv", help=f"{profile}; {len(filtered_events):,} rows after the current date, channel, device, and product filters.")
+right_export.download_button("Export filtered events JSON", json_bytes, file_name="journeyiq_filtered_events.json", mime="application/json", help=f"{profile}; {len(filtered_events):,} rows after the current date, channel, device, and product filters.")
 st.caption("JourneyIQ · DEMO DATA or FULL DATA is determined from the generated profile row count; filtered dashboards never stand in for full-dataset verification.")

@@ -42,6 +42,17 @@ def test_support_events_and_tickets_exist_and_share_sessions():
     assert support_event_sessions == support_ticket_sessions
 
 
+def test_product_filter_changes_cohort_and_preserves_relationships():
+    data = generate_demo_data()
+    product_id = data["products"].product_id.iloc[0]
+    cohort = filtered_sessions(data, product=product_id)
+    assert len(cohort) > 0
+    assert set(cohort.product_id) == {product_id}
+    assert data["sessions"].product_id.isin(data["products"].product_id).all()
+    assert data["events"].product_id.dropna().isin(data["products"].product_id).all()
+    assert data["orders"].product_id.isin(data["products"].product_id).all()
+
+
 def test_channel_filter_changes_actual_cohort_and_funnel_denominator():
     data = generate_demo_data()
     website = filtered_sessions(data, channel="Website")

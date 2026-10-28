@@ -50,6 +50,8 @@ def _json(value):
 
 def generate(config: Config = Config(), output: str | Path = "data", database_url: str | None = None) -> dict:
     """Generate baseline rows, then isolated traceable anomalies; export stable files and report."""
+    if min(config.sessions, config.customers, config.pages, config.products, config.chunk_size) < 1:
+        raise ValueError("sessions, customers, pages, products, and chunk_size must be positive")
     out = Path(output); out.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(config.seed)
     start = pd.Timestamp(config.start_date, tz="UTC")
@@ -58,19 +60,23 @@ def generate(config: Config = Config(), output: str | Path = "data", database_ur
     pages = pd.DataFrame([{"page_id": f"PAG-{i+1:06d}", "page_name": name, "page_type": kind, "is_active": True, "effective_from": start.isoformat(), "effective_to": (start+pd.Timedelta(days=366)).isoformat()} for i, (name, kind) in enumerate(page_catalog[:config.pages])])
     products = pd.DataFrame([{"product_id": f"PRD-{i+1:06d}", "product_name": f"JourneyIQ product {i+1}", "category": ["Fitness", "Wellness", "Accessories"][i%3], "unit_price": round(float(rng.uniform(19, 450)),2), "is_active": True, "effective_from": start.isoformat(), "effective_to": (start+pd.Timedelta(days=366)).isoformat()} for i in range(config.products)])
     customers = pd.DataFrame([{"customer_id": f"CUS-{i+1:06d}", "created_at": (start-pd.Timedelta(days=int(rng.integers(1,700)))).isoformat(), "consent_status": ["granted", "denied", "unknown"][int(rng.choice(3,p=[.68,.2,.12]))], "lifecycle_state": "active", "country": ["US","GB","CA","AU"][i%4]} for i in range(config.customers)])
-    sessions=[]; events=[]; carts=[]; cartitems=[]; orders=[]; tickets=[]; assignments=[]; outcomes=[]; ground=[]
-    session_facts=[]
+    experiments=pd.DataFrame([{"experiment_id":f"EXP-2026-{i:06d}","name":name,"status":"completed","start_at":start.isoformat(),"end_at":(start+pd.Timedelta(days=365)).isoformat()} for i,name in enumerate(["Checkout clarity","Product recommendations","Payment copy"],1)])
+    sessions=[]; carts=[]; cartitems=[]; orders=[]; tickets=[]; assignments=[]; outcomes=[]; ground=[]
+    event_path=out/"journey_events.csv"
+    event_path.unlink(missing_ok=True)
+    event_buffer=[]
+    first_purchase=None
     for si in range(config.sessions):
         n=si+1; sid=deterministic_id("SES", n); cust_index=int(rng.integers(config.customers)); cust=customers.iloc[cust_index]
-        consent=cust.consent_status; linked=consent=="granted" and rng.random()>.22
+        consent="denied" if config.sessions>=4 and n==2 else cust.consent_status; linked=consent=="granted" and rng.random()>.22
         anon=f"AN-{rng.integers(1,max(2,config.sessions//2)):08d}"
         channel="website" if n==1 else "mobile_app" if n==2 else str(rng.choice(["website","mobile_app"],p=[.7,.3])); device=str(rng.choice(["desktop","mobile","tablet"],p=[.38,.52,.10]))
-        bot=bool(rng.random()<.035); bot=False if n==1 else bot; converted=bool((not bot) and (n==1 or rng.random()<.58))
+        bot=n==4 or (n not in (1,2) and bool(rng.random()<.035)); converted=bool((not bot) and (n==1 or rng.random()<.58))
         began=start+pd.Timedelta(minutes=int(rng.integers(0,max(1,365*24*60))))
         sessions.append({"session_id":sid,"customer_id":cust.customer_id if linked else None,"anonymous_id":anon,"started_at":began.isoformat(),"ended_at":None,"channel":channel,"device_type":device,"consent_status":consent,"is_bot":bot,"lifecycle_state":"completed"})
         page=pages.iloc[int(rng.integers(len(pages)))].page_id; product=products.iloc[int(rng.integers(len(products)))]; cartid=f"CRT-{n:06d}"
         has_support=bool((not bot) and (n%12==0 or rng.random()<0.04))
-        sequence=["session_started"]+["page_viewed"]*int(rng.integers(12,20))
+        sequence=["session_started"]
         if not bot:
             sequence += ["product_viewed"]
             if n==1 or rng.random()<.58: sequence += ["added_to_cart"]
@@ -78,16 +84,24 @@ def generate(config: Config = Config(), output: str | Path = "data", database_ur
             if has_cart and (n==1 or rng.random()<.64): sequence += ["checkout_started","payment_attempted", "purchase_completed" if converted else "purchase_failed"]
         converted="purchase_completed" in sequence
         if has_support: sequence.append("support_contacted")
+        session_event_target=19 if config.sessions>=4 and n==config.sessions else 20
+        sequence[1:1]=["page_viewed"]*(session_event_target-len(sequence))
         elapsed_seconds=0; last_occurred=began
         support_page=next((row.page_id for row in pages.itertuples() if row.page_type=="support"),pages.iloc[0].page_id)
         for ei, etype in enumerate(sequence,1):
-            if ei > 1: elapsed_seconds += int(rng.integers(8,85))
+            if ei > 1: elapsed_seconds += int(rng.integers(8,50))
             occurred=began+pd.Timedelta(seconds=elapsed_seconds); last_occurred=occurred
-            delay=int(rng.integers(1,6))
-            ev={"event_id":f"EVT-{sid}-{ei:06d}","session_id":sid,"customer_id":cust.customer_id if linked else None,"anonymous_id":anon,"event_type":etype,"event_timestamp":occurred.isoformat(),"ingestion_timestamp":(occurred+pd.Timedelta(seconds=delay)).isoformat(),"channel":channel,"page_id":support_page if etype=="support_contacted" else page if etype in ("page_viewed","product_viewed","checkout_started","payment_attempted") else None,"product_id":product.product_id if etype in ("product_viewed","added_to_cart","purchase_completed") else None,"event_properties":_json({"device_type":device,"bot_signal":bot,"schema_version":"1.0","attempt":1 if etype.startswith("purchase") else None}),"event_version":"1.0"}
-            events.append(ev)
+            delay=1800 if config.sessions>=4 and n==1 and ei==1 else 2 if config.sessions>=4 and n==1 and ei==2 else int(rng.integers(1,6))
+            ev={"event_id":f"EVT-{sid}-{ei:06d}","session_id":sid,"customer_id":cust.customer_id if linked else None,"anonymous_id":anon,"event_type":etype,"event_timestamp":occurred.isoformat(),"ingestion_timestamp":(occurred+pd.Timedelta(seconds=delay)).isoformat(),"channel":channel,"page_id":support_page if etype=="support_contacted" else page if etype in ("page_viewed","product_viewed","checkout_started","payment_attempted") else None,"product_id":product.product_id if etype in ("product_viewed","added_to_cart","purchase_completed") else None,"event_properties":_json({"device_type":device,"bot_signal":bot,"schema_version":"1.0","attempt":1 if etype.startswith("purchase") else None,"order_id":f"ORD-{n:06d}" if etype=="purchase_completed" else None}),"event_version":"1.0"}
+            if config.sessions>=4 and n==2 and ei==1:
+                ev["customer_id"]=customers.iloc[0].customer_id
+            event_buffer.append(ev)
+            if n==1 and etype=="purchase_completed":
+                first_purchase=ev.copy()
+            if len(event_buffer)>=config.chunk_size:
+                pd.DataFrame(event_buffer).to_csv(event_path,mode="a",header=not event_path.exists(),index=False,lineterminator="\n",na_rep="")
+                event_buffer.clear()
         sessions[-1]["ended_at"]=last_occurred.isoformat()
-        session_facts.append((sid, sequence, product, cartid, converted, linked, cust, began, channel, page))
         if "added_to_cart" in sequence:
             carts.append({"cart_id":cartid,"session_id":sid,"customer_id":cust.customer_id if linked else None,"created_at":began.isoformat(),"state":"converted" if converted else "abandoned"})
             cartitems.append({"cart_item_id":f"CIT-{n:06d}","cart_id":cartid,"product_id":product.product_id,"quantity":1,"unit_price":product.unit_price})
@@ -100,31 +114,16 @@ def generate(config: Config = Config(), output: str | Path = "data", database_ur
         funnel_complete="purchase_completed" in sequence
         outcomes.append({"outcome_id":deterministic_id("OUT",n),"session_id":sid,"outcome_type":"converted" if funnel_complete else ("bot" if bot else "checkout_abandoned" if "checkout_started" in sequence else "cart_abandoned" if "added_to_cart" in sequence else "browsed"),"outcome_at":(began+pd.Timedelta(minutes=10)).isoformat(),"rule_version":"1.0"})
     if config.sessions >= 4:
-        s1,s2,s3,s4=[session_facts[i][0] for i in range(4)]
-        ix=[i for i,e in enumerate(events) if e["session_id"]==s1][:2]
-        if len(ix)==2:
-            events[ix[0]]["ingestion_timestamp"]=(pd.Timestamp(events[ix[0]]["event_timestamp"])+pd.Timedelta(seconds=1800)).isoformat()
-            events[ix[1]]["ingestion_timestamp"]=(pd.Timestamp(events[ix[1]]["event_timestamp"])+pd.Timedelta(seconds=2)).isoformat()
-            ground.append({"entity_id":s1,"issue_type":"out_of_order_arrival"})
-        ix2=next(i for i,e in enumerate(events) if e["session_id"]==s2)
-        sessions[int(s2.split("-")[-1])-1]["consent_status"]="denied"
-        sessions[int(s2.split("-")[-1])-1]["customer_id"]=None
-        events[ix2]["customer_id"]=customers.iloc[0].customer_id
-        ground.append({"entity_id":s2,"issue_type":"identity_stitching"})
-        purchase=next((e for e in events if e["event_type"]=="purchase_completed"),None)
-        if purchase:
-            conversion_session=purchase["session_id"]
-            duplicate={**purchase,"event_id":f"EVT-{conversion_session}-999999"}
-            duplicate_props=json.loads(duplicate["event_properties"]); duplicate_props["duplicate_source_event_id"]=purchase["event_id"]; duplicate_props["duplicate_source"]=True; duplicate["event_properties"]=_json(duplicate_props)
-            events.append(duplicate); ground.append({"entity_id":conversion_session,"issue_type":"duplicate_conversion"})
-        sessions[int(s4.split("-")[-1])-1]["is_bot"]=True
-        outcomes[int(s4.split("-")[-1])-1]["outcome_type"]="bot"
-        for e in events:
-            if e["session_id"]==s4:
-                props=json.loads(e["event_properties"]); props["bot_signal"]=True; e["event_properties"]=_json(props)
-        ground.append({"entity_id":s4,"issue_type":"bot_traffic"})
-    experiments=pd.DataFrame([{"experiment_id":f"EXP-2026-{i:06d}","name":name,"status":"completed","start_at":start.isoformat(),"end_at":(start+pd.Timedelta(days=365)).isoformat()} for i,name in enumerate(["Checkout clarity","Product recommendations","Payment copy"],1)])
-    tables={"customers":customers,"sessions":pd.DataFrame(sessions),"journey_events":pd.DataFrame(events),"pages":pages,"products":products,"carts":pd.DataFrame(carts,columns=["cart_id","session_id","customer_id","created_at","state"]),"cart_items":pd.DataFrame(cartitems,columns=["cart_item_id","cart_id","product_id","quantity","unit_price"]),"orders":pd.DataFrame(orders,columns=["order_id","session_id","customer_id","cart_id","ordered_at","status","total_amount","currency"]),"support_tickets":pd.DataFrame(tickets,columns=["ticket_id","session_id","customer_id","created_at","status","reason"]),"experiments":experiments,"experiment_assignments":pd.DataFrame(assignments),"journey_outcomes":pd.DataFrame(outcomes)}
+        s1=deterministic_id("SES",1); s2=deterministic_id("SES",2); s4=deterministic_id("SES",4)
+        ground.extend([{"entity_id":s1,"issue_type":"out_of_order_arrival"},{"entity_id":s2,"issue_type":"identity_stitching"},{"entity_id":s4,"issue_type":"bot_traffic"}])
+        if first_purchase is not None:
+            duplicate={**first_purchase,"event_id":f"EVT-{s1}-999999"}
+            duplicate_props=json.loads(duplicate["event_properties"]); duplicate_props["duplicate_source_event_id"]=first_purchase["event_id"]; duplicate_props["duplicate_source"]=True; duplicate["event_properties"]=_json(duplicate_props)
+            event_buffer.append(duplicate); ground.append({"entity_id":s1,"issue_type":"duplicate_conversion"})
+    if event_buffer:
+        pd.DataFrame(event_buffer).to_csv(event_path,mode="a",header=not event_path.exists(),index=False,lineterminator="\n",na_rep="")
+        event_buffer.clear()
+    tables={"customers":customers,"sessions":pd.DataFrame(sessions),"journey_events":pd.read_csv(event_path),"pages":pages,"products":products,"carts":pd.DataFrame(carts,columns=["cart_id","session_id","customer_id","created_at","state"]),"cart_items":pd.DataFrame(cartitems,columns=["cart_item_id","cart_id","product_id","quantity","unit_price"]),"orders":pd.DataFrame(orders,columns=["order_id","session_id","customer_id","cart_id","ordered_at","status","total_amount","currency"]),"support_tickets":pd.DataFrame(tickets,columns=["ticket_id","session_id","customer_id","created_at","status","reason"]),"experiments":experiments,"experiment_assignments":pd.DataFrame(assignments),"journey_outcomes":pd.DataFrame(outcomes)}
     for name,df in tables.items():
         df=df.reindex(sorted(df.columns),axis=1).sort_values(df.columns[0],kind="stable").reset_index(drop=True); tables[name]=df
         df.to_csv(out/f"{name}.csv",index=False,lineterminator="\n",na_rep="")
@@ -158,22 +157,38 @@ def generate(config: Config = Config(), output: str | Path = "data", database_ur
         "assignment_experiment_fk_valid":bool(tables["experiment_assignments"].experiment_id.isin(tables["experiments"].experiment_id).all()),
         "outcome_session_fk_valid":bool(tables["journey_outcomes"].session_id.isin(tables["sessions"].session_id).all()),
         "allowed_event_types":bool(tables["journey_events"].event_type.isin(TAXONOMY).all()),
+        "event_volume_target":len(tables["journey_events"])==config.sessions*20,
+        "event_page_requirements":bool(tables["journey_events"].loc[tables["journey_events"].event_type.isin([name for name, rules in TAXONOMY.items() if rules.get("page")]), "page_id"].notna().all()),
+        "event_product_requirements":bool(tables["journey_events"].loc[tables["journey_events"].event_type.isin([name for name, rules in TAXONOMY.items() if rules.get("product")]), "product_id"].notna().all()),
         "allowed_channel_values":bool(tables["sessions"].channel.isin(["website","mobile_app"]).all()),
+        "allowed_event_channel_values":bool(tables["journey_events"].channel.isin(["website","mobile_app"]).all()),
         "allowed_device_values":bool(tables["sessions"].device_type.isin(["desktop","mobile","tablet"]).all()),
+        "allowed_consent_values":bool(tables["sessions"].consent_status.isin(["granted","denied","unknown"]).all() and tables["customers"].consent_status.isin(["granted","denied","unknown"]).all()),
+        "allowed_customer_lifecycle":bool(tables["customers"].lifecycle_state.isin(["active","inactive","deleted"]).all()),
         "allowed_session_lifecycle":bool(tables["sessions"].lifecycle_state.isin(["active","completed","expired"]).all()),
+        "allowed_page_types":bool(tables["pages"].page_type.isin(["landing","discovery","product","cart","checkout","payment","support","campaign"]).all()),
+        "allowed_catalog_lifecycle":bool(tables["pages"].is_active.isin([True,False]).all() and tables["products"].is_active.isin([True,False]).all()),
+        "nonnegative_product_prices":bool((tables["products"].unit_price>=0).all()),
         "allowed_cart_lifecycle":bool(tables["carts"].state.isin(["open","abandoned","converted","expired"]).all()),
+        "positive_cart_item_quantities":bool((tables["cart_items"].quantity>0).all()),
+        "nonnegative_cart_item_prices":bool((tables["cart_items"].unit_price>=0).all()),
         "allowed_order_lifecycle":bool(tables["orders"].status.isin(["pending","paid","failed","refunded"]).all()),
         "allowed_support_lifecycle":bool(tables["support_tickets"].status.isin(["open","pending","resolved","closed"]).all()),
+        "allowed_experiment_lifecycle":bool(tables["experiments"].status.isin(["draft","active","completed","paused"]).all()),
         "allowed_outcome_types":bool(tables["journey_outcomes"].outcome_type.isin(["converted","checkout_abandoned","cart_abandoned","browsed","bot"]).all()),
+        "outcome_one_per_session":bool(tables["journey_outcomes"].session_id.is_unique),
         "session_timestamp_order":bool((pd.to_datetime(tables["sessions"].ended_at,utc=True)>=pd.to_datetime(tables["sessions"].started_at,utc=True)).all()),
+        "sessionization_timeout":bool(((pd.to_datetime(tables["sessions"].ended_at,utc=True)-pd.to_datetime(tables["sessions"].started_at,utc=True))<pd.Timedelta(minutes=30)).all()),
+        "event_session_time_bounds":bool(tables["journey_events"].merge(tables["sessions"][["session_id","started_at","ended_at"]],on="session_id").assign(valid=lambda frame:(pd.to_datetime(frame.event_timestamp,utc=True)>=pd.to_datetime(frame.started_at,utc=True))&(pd.to_datetime(frame.event_timestamp,utc=True)<=pd.to_datetime(frame.ended_at,utc=True))).valid.all()),
         "event_timestamp_latency_nonnegative":bool((pd.to_datetime(tables["journey_events"].ingestion_timestamp,utc=True)>=pd.to_datetime(tables["journey_events"].event_timestamp,utc=True)).all()),
         "assignment_effective_dates":bool(tables["experiment_assignments"].merge(tables["experiments"],on="experiment_id").assign(valid=lambda frame:(pd.to_datetime(frame.assigned_at,utc=True)>=pd.to_datetime(frame.start_at,utc=True))&(pd.to_datetime(frame.assigned_at,utc=True)<=pd.to_datetime(frame.end_at,utc=True))).valid.all()),
         "cart_order_totals_reconcile":bool(tables["orders"].merge(tables["cart_items"].assign(line_total=lambda frame:frame.quantity*frame.unit_price).groupby("cart_id",as_index=False).line_total.sum(),on="cart_id",how="left").dropna(subset=["cart_id"]).eval("total_amount == line_total").all()),
     })
     errors=[name for name,passed in checks.items() if not passed]
-    validation={"status":"passed" if not errors else "failed","entity_row_counts":{name:len(frame) for name,frame in tables.items()},"errors":errors,"warnings":["Injected anomalies are retained in source events and evaluated separately against ground_truth.csv."],"reconciliation":{"generated_sessions":len(tables["sessions"]),"generated_events":len(tables["journey_events"]),"filtered_sessions":metrics["eligible_sessions"],"paid_order_ids":metrics["purchase_order_count"],"converting_sessions":metrics["purchases"],"conversion_numerator":metrics["purchases"],"conversion_denominator":metrics["eligible_sessions"],"eligible_mature_carts":metrics["eligible_cart_sessions"],"abandoned_carts":metrics["abandoned_cart_sessions"]},"funnel_counts":{row["stage"]:row["sessions"] for row in metrics["funnel"]},"anomaly_evaluation":evaluation,"checks":checks,"check_categories":{"structural_integrity":list(checks),"anomaly_detection_metrics":["true_positives","false_positives","false_negatives","precision","recall","f1"]}}
+    validation={"status":"passed" if not errors else "failed","entity_row_counts":{name:len(frame) for name,frame in tables.items()},"errors":errors,"warnings":["Injected anomalies are retained in source events and evaluated separately against ground_truth.csv."],"reconciliation":{"generated_sessions":len(tables["sessions"]),"generated_events":len(tables["journey_events"]),"filtered_sessions":metrics["sessions"],"paid_order_ids":metrics["purchase_order_count"],"converting_sessions":metrics["purchases"],"conversion_numerator":metrics["purchases"],"conversion_denominator":metrics["eligible_sessions"],"conversion_rate":metrics["conversion_rate"],"eligible_mature_carts":metrics["eligible_cart_sessions"],"abandoned_carts":metrics["abandoned_cart_sessions"],"abandonment_rate":metrics["abandonment_rate"],"support_contact_rate":metrics["support_contact_rate"]},"funnel_counts":{row["stage"]:row["sessions"] for row in metrics["funnel"]},"anomaly_evaluation":evaluation,"checks":checks,"check_categories":{"structural_integrity":list(checks),"anomaly_detection_metrics":["true_positives","false_positives","false_negatives","precision","recall","f1"]}}
     (out/"validation_report.json").write_text(json.dumps(validation,indent=2,sort_keys=True)+"\n")
-    checksums={path.name:hashlib.sha256(path.read_bytes()).hexdigest() for path in sorted(out.glob("*.csv"))}
+    dataset_files=[f"{name}.csv" for name in tables]+["ground_truth.csv"]
+    checksums={name:hashlib.sha256((out/name).read_bytes()).hexdigest() for name in dataset_files}
     manifest={"seed":config.seed,"config":asdict(config),"datasets_fingerprinted":sorted(checksums),"comparison_scope":"Full generated profile for this seed/configuration; no filtered dashboard extract is included.","sha256":checksums,"entity_row_counts":validation["entity_row_counts"],"derived_metrics":{"funnel_counts":validation["funnel_counts"],"conversion_rate":metrics["conversion_rate"],"abandonment_rate":metrics["abandonment_rate"]},"anomaly_counts":ground_df.issue_type.value_counts().sort_index().to_dict(),"anomaly_evaluation":evaluation}
     (out/"reproducibility.json").write_text(json.dumps(manifest,indent=2,sort_keys=True)+"\n")
     if database_url:
@@ -196,12 +211,13 @@ def verify_reproducibility(config: Config = Config(), output: str | Path = "data
         second = generate(config, temporary)
         second_validation = second["validation"]
         del second
-        first_hashes = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in sorted(target.glob("*.csv"))}
-        second_hashes = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in sorted(Path(temporary).glob("*.csv"))}
-        first_metrics = first_validation["reconciliation"] | {"funnel_counts": first_validation["funnel_counts"]}
-        second_metrics = second_validation["reconciliation"] | {"funnel_counts": second_validation["funnel_counts"]}
         first_report = json.loads((target / "reproducibility.json").read_text())
         second_report = json.loads((Path(temporary) / "reproducibility.json").read_text())
+        dataset_files = first_report["datasets_fingerprinted"]
+        first_hashes = {name: hashlib.sha256((target / name).read_bytes()).hexdigest() for name in dataset_files}
+        second_hashes = {name: hashlib.sha256((Path(temporary) / name).read_bytes()).hexdigest() for name in dataset_files}
+        first_metrics = first_validation["reconciliation"] | {"funnel_counts": first_validation["funnel_counts"]}
+        second_metrics = second_validation["reconciliation"] | {"funnel_counts": second_validation["funnel_counts"]}
         comparison = {
             "run_a": str(target),
             "run_b": "temporary second generation",

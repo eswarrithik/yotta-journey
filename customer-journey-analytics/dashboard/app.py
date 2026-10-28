@@ -20,7 +20,7 @@ from sample_data import (
     validate_sample,
 )
 
-st.set_page_config(page_title="YottaJourney · Demo Analytics", page_icon="↗", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="JourneyIQ · Demo Analytics", page_icon="↗", layout="wide", initial_sidebar_state="expanded")
 st.markdown(
     """
     <style>
@@ -60,7 +60,7 @@ st.markdown(
 data = generate_demo_data()
 
 st.sidebar.markdown(
-    '<div class="brand"><div class="brandmark">↗</div><div><div class="brandname">Yotta<span>Journey</span></div><div class="brandcaption">YOTTAFLEX.AI · ANALYTICS</div></div></div>',
+    '<div class="brand"><div class="brandmark">↗</div><div><div class="brandname">Journey<span>IQ</span></div><div class="brandcaption">JOURNEYIQ · ANALYTICS</div></div></div>',
     unsafe_allow_html=True,
 )
 st.sidebar.markdown("#### Analytics workspace")
@@ -77,7 +77,7 @@ days_filter = st.sidebar.select_slider("Date range", options=[7, 14, 30], value=
 st.sidebar.caption("Filters update every metric and chart in this view.")
 st.sidebar.divider()
 st.sidebar.markdown("**Source profile**")
-st.sidebar.caption("Reproducible synthetic sample · seed 20261022")
+st.sidebar.caption(f"DEMO DATA · {len(data['sessions']):,} generated sessions · {len(data['events']):,} generated events · seed 20261022")
 
 sessions = filtered_sessions(data, channel_filter, device_filter)
 cutoff = data["sessions"].started_at.max() - pd.Timedelta(days=days_filter)
@@ -92,22 +92,30 @@ filtered_data = {
 funnel = funnel_counts(filtered_data, sessions)
 anomalies = anomaly_summary(filtered_data, sessions)
 validation = validate_sample(data, sessions)
-purchases = int(filtered_data["orders"].session_id.nunique())
+entry_ids = set(sessions.loc[~sessions.is_bot, "session_id"])
+entry_ids &= set(filtered_data["events"].loc[filtered_data["events"].event_type.eq("session_started"), "session_id"])
+paid_orders = filtered_data["orders"].query("status == 'paid'")
+purchase_ids = set(paid_orders.session_id) & entry_ids
+purchases = len(purchase_ids)
 customer_count = int(sessions.customer_id.nunique())
 session_count = int(sessions.session_id.nunique())
-cart_count = int(funnel.loc[funnel.event_type.eq("added_to_cart"), "sessions"].iloc[0])
-abandoned_carts = max(0, cart_count - purchases)
-abandonment_rate = abandoned_carts / cart_count if cart_count else 0.0
-conversion_rate = purchases / session_count if session_count else 0.0
+eligible_session_count = len(entry_ids)
+cart_ids = set(filtered_data["events"].loc[filtered_data["events"].event_type.eq("added_to_cart") & filtered_data["events"].session_id.isin(entry_ids), "session_id"])
+last_activity = filtered_data["events"].groupby("session_id").event_timestamp.max()
+as_of = filtered_data["events"].event_timestamp.max()
+mature_cart_ids = {sid for sid in cart_ids if pd.notna(last_activity.get(sid)) and as_of - last_activity[sid] >= pd.Timedelta(minutes=30)} if pd.notna(as_of) else set()
+abandoned_carts = len(mature_cart_ids - purchase_ids)
+abandonment_rate = abandoned_carts / len(mature_cart_ids) if mature_cart_ids else 0.0
+conversion_rate = purchases / eligible_session_count if eligible_session_count else 0.0
 support_rate = filtered_data["support"].session_id.nunique() / session_count if session_count else 0.0
 
 st.markdown(
-    '<div class="demo-banner"><span class="demo-pill">DEMO DATA</span><span>Preview uses a small, reproducible synthetic sample. Metrics are calculated from the sample event, session, customer, and order records.</span></div>',
+    '<div class="demo-banner"><span class="demo-pill">DEMO DATA</span><span>Preview uses a deterministic JourneyIQ sample. Filtered metrics and source-event rows are derived from the generated demo records.</span></div>',
     unsafe_allow_html=True,
 )
 st.title(section)
 st.markdown(
-    f'<p class="section-intro">Customer journey intelligence · {session_count:,} sessions in the current filter</p>',
+    f'<p class="section-intro">Customer journey intelligence · filtered {session_count:,}/{len(data["sessions"]):,} sessions · {len(filtered_data["events"]):,}/{len(data["events"]):,} events</p>',
     unsafe_allow_html=True,
 )
 
@@ -162,13 +170,15 @@ if section == "Executive overview":
         bar = px.bar(drops, x="dropoff_percent", y="stage", orientation="h", text=drops.dropoff_percent.map(lambda x: f"{x:.0f}%"), color="dropoff_percent", color_continuous_scale=["#72c2b4", "#087f8c", "#db8666"])
         bar.update_layout(coloraxis_showscale=False, yaxis={"categoryorder": "array", "categoryarray": drops.stage.tolist()})
         st.plotly_chart(chart_layout(bar, 330), use_container_width=True, config={"displayModeBar": False})
-    st.caption("Conversion rate = distinct sessions with a paid order ÷ eligible sessions. Abandonment = cart sessions without a paid order ÷ sessions that added to cart. A session/order is counted once.")
+    st.caption(f"Conversion = {purchases:,} distinct converting sessions ÷ {eligible_session_count:,} eligible human session entries. Mature-cart abandonment = {abandoned_carts:,} abandoned ÷ {len(mature_cart_ids):,} carts idle for at least 30 minutes.")
     st.subheader("Channel journey comparison")
     by_channel = channel_funnel(filtered_data, sessions)
-    by_channel["stage_rate"] = by_channel.apply(lambda row: row.sessions / max(1, int(sessions[sessions.channel.eq(row.channel)].session_id.nunique())) * 100, axis=1)
-    channel_chart = px.bar(by_channel, x="stage", y="stage_rate", color="channel", barmode="group", color_discrete_map={"Website": "#087f8c", "Mobile app": "#8178c7"}, labels={"stage_rate": "% of channel sessions", "stage": "Funnel stage", "channel": "Channel"}, hover_data={"sessions": True, "stage_rate": ":.1f"})
+    by_channel["stage_rate"] = by_channel.apply(lambda row: row.sessions / max(1, int(row.channel_eligible_sessions)) * 100, axis=1)
+    channel_chart = px.bar(by_channel, x="stage", y="stage_rate", color="channel", barmode="group", color_discrete_map={"Website": "#087f8c", "Mobile app": "#8178c7"}, labels={"stage_rate": "% of channel sessions", "stage": "Funnel stage", "channel": "Channel"}, hover_data={"sessions": True, "channel_eligible_sessions": True, "stage_rate": ":.1f"})
     st.plotly_chart(chart_layout(channel_chart, 320), use_container_width=True)
-    st.metric("Support contact rate", f"{support_rate:.1%}", help="Sessions with at least one linked support ticket divided by filtered sessions.")
+    st.metric("Support contact rate", f"{support_rate:.1%}", help=f"{filtered_data['support'].session_id.nunique():,} distinct support sessions ÷ {session_count:,} filtered sessions.")
+    if filtered_data["support"].empty:
+        st.info("No support contacts occur in this filtered cohort; the generated sample may contain support sessions outside these filters.")
 
 elif section == "Journey funnel":
     show_kpis()
@@ -184,10 +194,10 @@ elif section == "Journey funnel":
             table["conversion_from_previous"] = table.conversion_from_previous.map(lambda value: f"{value:.1%}")
             table["dropoff_rate"] = table.dropoff_rate.map(lambda value: f"{value:.1%}")
             st.dataframe(table, hide_index=True, use_container_width=True)
-        st.caption("Stage counts are distinct filtered sessions with the event. Conversion denominator is the immediately preceding stage; first stage denominator is all filtered sessions.")
+        st.caption("Stage counts are distinct eligible human sessions with the event. Stage conversion divides by the preceding stage; first-stage eligibility is a non-bot session-start event.")
     with channel_tab:
         by_channel = channel_funnel(filtered_data, sessions)
-        by_channel["session_share"] = by_channel.apply(lambda row: row.sessions / max(1, int(sessions[sessions.channel.eq(row.channel)].session_id.nunique())) * 100, axis=1)
+        by_channel["session_share"] = by_channel.apply(lambda row: row.sessions / max(1, int(row.channel_eligible_sessions)) * 100, axis=1)
         fig = px.bar(by_channel, x="stage", y="session_share", color="channel", barmode="group", text=by_channel.session_share.map(lambda value: f"{value:.0f}%"), color_discrete_map={"Website": "#087f8c", "Mobile app": "#8178c7"}, labels={"session_share": "% of channel sessions", "stage": "Stage"})
         st.plotly_chart(chart_layout(fig, 380), use_container_width=True)
 
@@ -199,7 +209,7 @@ elif section == "Friction analysis":
     else:
         left, right = st.columns([1.1, 1])
         with left:
-            chart = px.bar(friction, x="dropoff_rate", y="page", orientation="h", color="dropoff_rate", color_continuous_scale=["#7ac4b7", "#0b8790", "#d9795b"], labels={"dropoff_rate": "Drop-off rate", "page": "Page"}, hover_data={"sessions": True, "page_views": True, "median_latency_seconds": True})
+            chart = px.bar(friction, x="dropoff_rate", y="page", orientation="h", color="dropoff_rate", color_continuous_scale=["#7ac4b7", "#0b8790", "#d9795b"], labels={"dropoff_rate": "Drop-off rate", "page": "Page"}, hover_data={"sessions": True, "dropoff_count": True, "page_views": True, "median_latency_seconds": True})
             chart.update_xaxes(tickformat=".0%")
             st.plotly_chart(chart_layout(chart, 350), use_container_width=True)
         with right:
@@ -208,38 +218,43 @@ elif section == "Friction analysis":
             display["dropoff_rate"] = display.dropoff_rate.map(lambda value: f"{value:.1%}")
             display["median_latency_seconds"] = display.median_latency_seconds.map(lambda value: f"{value:.0f}s")
             st.dataframe(display.rename(columns={"page": "Page", "page_views": "Views", "sessions": "Sessions", "median_latency_seconds": "Median latency", "dropoff_rate": "Drop-off"}), hide_index=True, use_container_width=True)
-    st.info("Drop-off is calculated from unique sessions entering a stage-specific page and not reaching the next funnel stage. Page latency is the median source-event ingestion delay.")
+    st.info("Drop-off is calculated from unique eligible sessions entering a stage-specific page and not reaching the next funnel stage. Page latency is the median source-event ingestion delay.")
     failures = filtered_data["events"][filtered_data["events"].event_type.eq("purchase_failed")]
     st.metric("Failed payment attempts", f"{len(failures):,}")
 
 elif section == "Anomaly monitoring":
-    duplicate_events = anomalies["duplicates"]
-    bot_sessions = anomalies["bots"]
-    delayed_events = anomalies["delayed"]
-    duplicate_orders = int(duplicate_events.order_id.nunique())
-    cols = st.columns(3)
-    cols[0].metric("Duplicate conversions", f"{duplicate_orders:,}", help="Distinct order IDs represented by more than one purchase event.")
-    cols[1].metric("Bot sessions", f"{len(bot_sessions):,}", help="Sessions carrying the generated bot classification signal.")
-    cols[2].metric("Delayed events · >10 min", f"{len(delayed_events):,}", help="Event occurrence-to-ingestion latency exceeds 600 seconds.")
-    st.subheader("Detected signals")
-    tabs = st.tabs(["Duplicate conversions", "Bot traffic", "Delayed ingestion"])
+    scores = anomalies["scores"]
+    score_cols = st.columns(6)
+    for column, key in zip(score_cols, ["true_positives", "false_positives", "false_negatives", "precision", "recall", "f1"]):
+        value = f"{scores[key]:.1%}" if key in ("precision", "recall", "f1") else f"{scores[key]:,}"
+        column.metric(key.replace("_", " ").title(), value)
+    st.caption("Predictions are generated only from filtered source events and session fields. Ground-truth labels are loaded separately and used only for these evaluation scores.")
+    tabs = st.tabs(["Duplicate conversions", "Bot traffic", "Out-of-order arrival", "Identity stitching", "Delayed ingestion"])
     with tabs[0]:
-        if duplicate_events.empty:
-            st.success("No duplicate conversion events in this filtered sample.")
+        if anomalies["duplicates"].empty:
+            st.success("No repeated order conversion events occur in this filtered cohort.")
         else:
-            st.warning("A conversion event appears more than once for the same order. Both source records are retained for traceability.")
-            st.dataframe(duplicate_events[["event_id", "session_id", "order_id", "event_timestamp", "latency_seconds"]], hide_index=True, use_container_width=True)
+            st.dataframe(anomalies["duplicates"][["event_id", "session_id", "order_id", "event_timestamp", "ingestion_timestamp"]], hide_index=True, use_container_width=True)
     with tabs[1]:
-        if bot_sessions.empty:
-            st.info("No bot sessions in the current filter.")
+        if anomalies["bots"].empty:
+            st.info("No bot-classified sessions occur in this filtered cohort.")
         else:
-            st.dataframe(bot_sessions[["session_id", "channel", "device", "started_at", "is_bot"]], hide_index=True, use_container_width=True)
+            st.dataframe(anomalies["bots"][["session_id", "channel", "device", "started_at", "is_bot"]], hide_index=True, use_container_width=True)
     with tabs[2]:
-        if delayed_events.empty:
-            st.success("No events exceeded the 10-minute latency threshold.")
+        if anomalies["out_of_order"].empty:
+            st.success("No out-of-order arrivals were detected in this filtered cohort.")
         else:
-            st.dataframe(delayed_events[["event_id", "session_id", "event_type", "event_timestamp", "ingestion_timestamp", "latency_seconds"]].sort_values("latency_seconds", ascending=False), hide_index=True, use_container_width=True)
-    st.caption("Anomaly signals are calculated from event, session, and order records; the demo uses injected source-level examples so each monitoring panel can be previewed.")
+            st.dataframe(anomalies["out_of_order"][["event_id", "session_id", "event_type", "event_timestamp", "ingestion_timestamp"]], hide_index=True, use_container_width=True)
+    with tabs[3]:
+        if anomalies["identity"].empty:
+            st.success("No consent-invalid identity links were detected in this filtered cohort.")
+        else:
+            st.dataframe(anomalies["identity"][["event_id", "session_id", "customer_id", "event_type"]], hide_index=True, use_container_width=True)
+    with tabs[4]:
+        if anomalies["delayed"].empty:
+            st.success("No events exceeded the 10-minute ingestion-delay threshold.")
+        else:
+            st.dataframe(anomalies["delayed"][["event_id", "session_id", "event_type", "event_timestamp", "ingestion_timestamp", "latency_seconds"]], hide_index=True, use_container_width=True)
 
 elif section == "Data quality":
     st.subheader("Validation status")
@@ -255,7 +270,9 @@ elif section == "Data quality":
         st.dataframe(checks, hide_index=True, use_container_width=True)
     with right:
         st.markdown("##### Source row counts")
-        row_counts = pd.DataFrame([{"Entity": name.title(), "Rows": len(frame)} for name, frame in filtered_data.items()])
+        filtered_counts = {"customers": len(data["customers"]), "sessions": len(sessions), "events": len(filtered_data["events"]), "orders": len(filtered_data["orders"]), "support tickets": len(filtered_data["support"]), "ground truth labels": len(anomalies["ground_truth"])}
+        source_counts = {"customers": len(data["customers"]), "sessions": len(data["sessions"]), "events": len(data["events"]), "orders": len(data["orders"]), "support tickets": len(data["support"]), "ground truth labels": len(data["ground_truth"])}
+        row_counts = pd.DataFrame([{"Dataset": name.title(), "Filtered rows": filtered_counts[name], "Generated rows": source_counts[name]} for name in filtered_counts])
         st.dataframe(row_counts, hide_index=True, use_container_width=True)
         st.metric("Grounded purchase sessions", f"{filtered_data['orders'].session_id.nunique():,}", help="Distinct sessions with a generated paid order.")
     st.subheader("Quality notes")
@@ -264,4 +281,4 @@ elif section == "Data quality":
         st.error("Failed checks: " + ", ".join(validation["errors"]))
 
 st.divider()
-st.caption("YottaJourney · Customer Journey Analytics · DEMO DATA · Deterministic sample seed 20261022")
+st.caption("JourneyIQ · Customer Journey Analytics · DEMO DATA · Deterministic sample seed 20261022")

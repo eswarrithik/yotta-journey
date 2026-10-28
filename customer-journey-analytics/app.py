@@ -1,5 +1,7 @@
 from pathlib import Path
+import json
 import sys
+
 import pandas as pd
 import plotly.express as px
 import streamlit as st
@@ -7,72 +9,156 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 from yottajourney.analytics import analyze, detect_anomalies, evaluate_detection
 
-st.set_page_config(page_title="YottaJourney · Analytics", page_icon="↗", layout="wide")
-st.markdown("<style>.block-container{padding-top:2rem}.stMetric{background:#fff;border:1px solid #e4e9ed;padding:16px;border-radius:16px}.stApp{background:#f6f8f8}</style>",unsafe_allow_html=True)
-st.title("YottaJourney")
-st.caption("Customer journey intelligence · YottaFlex.ai")
-root=Path(__file__).parent/"data"
-if not (root/"sessions.csv").exists():
-    st.info("No dataset found yet. Generate the starter dataset to populate the analytics workspace.")
-    if st.button("Generate starter dataset",type="primary"):
-        from yottajourney.pipeline import generate, Config
-        with st.spinner("Generating deterministic customer journeys…"): generate(Config(),root)
+st.set_page_config(page_title="JourneyIQ · Customer Analytics", page_icon="↗", layout="wide")
+st.markdown("<style>.block-container{padding-top:1.5rem}.stMetric{background:#fff;border:1px solid #e4e9ed;padding:16px;border-radius:16px}.stApp{background:#f6f8fb}</style>", unsafe_allow_html=True)
+root = Path(__file__).parent / "data"
+
+if not (root / "sessions.csv").exists():
+    st.title("JourneyIQ")
+    st.info("No generated dataset was found. Generate the deterministic starter dataset to populate this analytics workspace.")
+    if st.button("Generate starter dataset", type="primary"):
+        from yottajourney.pipeline import Config, generate
+        with st.spinner("Generating JourneyIQ starter data…"):
+            generate(Config(), root)
         st.rerun()
     st.stop()
-names=["customers","sessions","journey_events","pages","products","carts","cart_items","orders","support_tickets","experiments","experiment_assignments","journey_outcomes"]
-tables={name:pd.read_csv(root/f"{name}.csv") for name in names}
-for name in ("sessions", "journey_events", "orders", "carts", "support_tickets"):
-    for col in tables[name].columns:
-        if col.endswith("_at") or col in ("event_timestamp","ingestion_timestamp"): tables[name][col]=pd.to_datetime(tables[name][col],utc=True,errors="coerce")
-st.sidebar.title("YottaJourney")
-page=st.sidebar.radio("Workspace",["Executive Overview","Customer Journey Funnel","Friction Analysis","Channel Analysis","Anomaly Monitoring","Data Quality"])
-channel=st.sidebar.selectbox("Channel",["All","website","mobile_app"])
-device=st.sidebar.selectbox("Device",["All","desktop","mobile","tablet"])
-result=analyze(tables,channel,device)
 
-def kpis():
-    cols=st.columns(5)
-    values=[("Sessions",f"{result['sessions']:,}"),("Customers",f"{result['unique_customers']:,}"),("Purchases",f"{result['purchases']:,}"),("Conversion",f"{result['conversion_rate']:.1%}"),("Support rate",f"{result['support_contact_rate']:.1%}")]
-    for col,(label,value) in zip(cols,values): col.metric(label,value)
+entity_names = ["customers", "sessions", "journey_events", "pages", "products", "carts", "cart_items", "orders", "support_tickets", "experiments", "experiment_assignments", "journey_outcomes"]
+tables = {name: pd.read_csv(root / f"{name}.csv") for name in entity_names}
+for name, frame in tables.items():
+    for column in frame.columns:
+        if column.endswith("_at") or column in ("event_timestamp", "ingestion_timestamp"):
+            frame[column] = pd.to_datetime(frame[column], utc=True, errors="coerce")
+profile = "FULL DATA" if len(tables["sessions"]) >= 100_000 else "DEMO DATA"
 
-if page=="Executive Overview":
-    st.subheader("Executive Overview"); kpis(); left,right=st.columns([1.6,1])
+st.sidebar.title("JourneyIQ")
+st.sidebar.caption(f"{profile} · Seed {json.loads((root / 'reproducibility.json').read_text()).get('seed', 'unknown')}")
+page = st.sidebar.radio("Workspace", ["Executive Overview", "Customer Journey Funnel", "Friction Analysis", "Channel Analysis", "Anomaly Monitoring", "Data Quality"])
+channel = st.sidebar.selectbox("Channel", ["All", "website", "mobile_app"])
+device = st.sidebar.selectbox("Device", ["All", "desktop", "mobile", "tablet"])
+days = st.sidebar.selectbox("Date range", [7, 30, 90], index=1, format_func=lambda value: f"Last {value} days")
+latest = tables["sessions"].started_at.max()
+cutoff = latest - pd.Timedelta(days=days)
+filtered_sessions = tables["sessions"]
+if channel != "All":
+    filtered_sessions = filtered_sessions[filtered_sessions.channel.eq(channel)]
+if device != "All":
+    filtered_sessions = filtered_sessions[filtered_sessions.device_type.eq(device)]
+filtered_sessions = filtered_sessions[filtered_sessions.started_at.ge(cutoff)]
+filtered_ids = set(filtered_sessions.session_id)
+filtered_tables = dict(tables)
+filtered_tables["sessions"] = filtered_sessions
+filtered_tables["journey_events"] = tables["journey_events"][tables["journey_events"].session_id.isin(filtered_ids)]
+filtered_tables["orders"] = tables["orders"][tables["orders"].session_id.isin(filtered_ids)]
+filtered_tables["carts"] = tables["carts"][tables["carts"].session_id.isin(filtered_ids)]
+filtered_tables["support_tickets"] = tables["support_tickets"][tables["support_tickets"].session_id.isin(filtered_ids)]
+result = analyze(tables, channel, device, start_at=cutoff, as_of=latest)
+
+st.markdown(f"**{profile}** · Seed 20261022 · active filters: {days} days, {channel}, {device}")
+st.title(page)
+st.caption(f"Filtered {result['sessions']:,} / {len(tables['sessions']):,} sessions · {len(filtered_tables['journey_events']):,} / {len(tables['journey_events']):,} events")
+
+
+def show_kpis():
+    columns = st.columns(5)
+    values = [
+        ("Filtered sessions", f"{result['sessions']:,}"),
+        ("Eligible funnel entries", f"{result['eligible_sessions']:,}"),
+        ("Distinct converting sessions", f"{result['purchases']:,}"),
+        ("Conversion rate", f"{result['conversion_rate']:.1%}"),
+        ("Support contact rate", f"{result['support_contact_rate']:.1%}"),
+    ]
+    for column, (label, value) in zip(columns, values):
+        column.metric(label, value)
+
+
+if page == "Executive Overview":
+    show_kpis()
+    left, right = st.columns([1.4, 1])
     with left:
-        st.markdown("#### Journey conversion")
-        f=pd.DataFrame(result["funnel"]); st.plotly_chart(px.funnel(f,x="sessions",y="stage",color_discrete_sequence=["#087F8C"]),use_container_width=True)
+        st.subheader("Eligible-session journey funnel")
+        funnel = pd.DataFrame(result["funnel"])
+        st.plotly_chart(px.funnel(funnel, x="sessions", y="stage", color_discrete_sequence=["#4f46a5"]), use_container_width=True)
     with right:
-        st.markdown("#### Journey health")
-        st.metric("Cart abandonment",f"{result['abandonment_rate']:.1%}"); st.metric("Median ingestion delay",f"{result['median_latency_seconds']:.0f}s"); st.metric("Data quality", "Review" if (root/"ground_truth.csv").exists() else "Passed", "Injected exceptions are traceable")
-    st.caption("Conversion denominator: filtered sessions. Purchase is idempotently counted once per session. Support rate is filtered sessions with ≥1 associated support ticket.")
-elif page=="Customer Journey Funnel":
-    st.subheader("Customer Journey Funnel"); kpis(); f=pd.DataFrame(result["funnel"])
-    st.plotly_chart(px.funnel(f,x="sessions",y="stage",color_discrete_sequence=["#087F8C"]),use_container_width=True)
-    st.dataframe(f.assign(conversion_rate=f.conversion_rate.map(lambda x:f"{x:.1%}"),dropoff_rate=f.dropoff_rate.map(lambda x:f"{x:.1%}")),hide_index=True,use_container_width=True)
-    st.caption("Each stage count is distinct eligible sessions reaching the event. Stage conversion denominator is the immediately preceding stage; first-stage conversion is 100%.")
-elif page=="Friction Analysis":
-    st.subheader("Friction Analysis"); left,right=st.columns(2)
-    with left: st.metric("Payment failures",result["checkout_failures"]); st.metric("Checkout abandonment",f"{result['abandonment_rate']:.1%}")
-    with right: st.metric("Median event latency",f"{result['median_latency_seconds']:.0f}s"); st.metric("High-latency events",int((pd.to_datetime(tables['journey_events'].ingestion_timestamp,utc=True)-pd.to_datetime(tables['journey_events'].event_timestamp,utc=True)).dt.total_seconds().gt(600).sum()))
-    st.markdown("#### Pages with highest observed ingestion latency")
-    if len(result["friction"]): st.dataframe(result["friction"].head(10),hide_index=True,use_container_width=True)
-    else: st.info("No page activity in this filter selection.")
-elif page=="Channel Analysis":
-    st.subheader("Channel Analysis"); kpis(); channel_counts=pd.DataFrame([{"Channel":k,"Sessions":v} for k,v in result["channel_sessions"].items()])
-    if len(channel_counts): st.plotly_chart(px.bar(channel_counts,x="Channel",y="Sessions",color="Channel",color_discrete_sequence=["#087F8C","#4f46a5"]),use_container_width=True)
-    a,b=st.columns(2); a.metric("Anonymous sessions",result["anonymous_sessions"]); b.metric("Consent-linked sessions",result["identified_sessions"])
-    st.info("Cross-channel journeys are attributed by source session; customer identity is linked only where consent permits.")
-elif page=="Anomaly Monitoring":
-    st.subheader("Anomaly Monitoring"); pred=detect_anomalies(tables); truth=pd.read_csv(root/"ground_truth.csv")
-    scores=evaluate_detection(pred,truth); cols=st.columns(5)
-    for col,key in zip(cols,["true_positives","false_positives","false_negatives","precision","recall"]): col.metric(key.replace("_"," ").title(),f"{scores[key]:.1%}" if key in ("precision","recall") else scores[key])
-    st.metric("F1 score",f"{scores['f1']:.1%}"); st.dataframe(pred,hide_index=True,use_container_width=True)
-    st.caption("Detection uses event arrival order, consent/session state, repeated purchase events, and source event bot signals. Ground truth is loaded only for evaluation.")
-elif page=="Data Quality":
-    st.subheader("Data Quality & Reproducibility"); report_path=root/"validation_report.json"
+        st.subheader("Journey health")
+        st.metric("Mature-cart abandonment", f"{result['abandonment_rate']:.1%}", help=f"{result['abandoned_cart_sessions']:,} abandoned of {result['eligible_cart_sessions']:,} carts idle for at least 30 minutes.")
+        st.metric("Support sessions", f"{result['support_sessions']:,}", help="Distinct filtered sessions with at least one support ticket.")
+        st.metric("Median ingestion delay", f"{result['median_latency_seconds']:.0f}s")
+        if result["support_sessions"] == 0:
+            st.info("No support contacts occur in this filtered cohort; the full dataset may still contain support journeys.")
+    st.caption(f"Conversion = {result['purchases']:,} distinct eligible converting sessions ÷ {result['eligible_sessions']:,} eligible human funnel entries. Bots and sessions without a session-start event are excluded.")
+
+elif page == "Customer Journey Funnel":
+    show_kpis()
+    funnel = pd.DataFrame(result["funnel"])
+    st.plotly_chart(px.funnel(funnel, x="sessions", y="stage", color_discrete_sequence=["#4f46a5"]), use_container_width=True)
+    display = funnel.copy()
+    for column in ("conversion_rate", "dropoff_rate"):
+        display[column] = display[column].map(lambda value: f"{value:.1%}")
+    st.dataframe(display, hide_index=True, use_container_width=True)
+    st.caption("Stage counts are distinct eligible sessions. Each stage conversion/drop-off divides by the immediately preceding stage; overall conversion divides by eligible funnel-entry sessions.")
+
+elif page == "Friction Analysis":
+    st.subheader("High-friction pages")
+    friction = result["friction"]
+    if friction.empty:
+        st.info("No page activity matches these filters. Broaden the date range or select another channel/device.")
+    else:
+        st.dataframe(friction.head(10), hide_index=True, use_container_width=True)
+    st.metric("Failed payment events", f"{result['checkout_failures']:,}")
+    st.metric("Median event ingestion delay", f"{result['median_latency_seconds']:.0f}s")
+    st.caption("Page activity and payment failures use the active session cohort. Ingestion latency is not the same as out-of-order event arrival.")
+
+elif page == "Channel Analysis":
+    show_kpis()
+    counts = pd.DataFrame([{"Channel": key, "Sessions": value} for key, value in result["channel_sessions"].items()])
+    if counts.empty:
+        st.info("No channel sessions match the active filters.")
+    else:
+        st.plotly_chart(px.bar(counts, x="Channel", y="Sessions", color="Channel", color_discrete_sequence=["#4f46a5", "#087f8c"]), use_container_width=True)
+    st.metric("Support-contacting sessions", f"{result['support_sessions']:,}")
+    st.info("A filtered channel can legitimately have zero support contacts; this is a cohort result, not missing data.")
+
+elif page == "Anomaly Monitoring":
+    prediction = detect_anomalies(filtered_tables)
+    truth_path = root / "ground_truth.csv"
+    truth = pd.read_csv(truth_path) if truth_path.exists() else pd.DataFrame(columns=["entity_id", "issue_type"])
+    truth = truth[truth.entity_id.isin(filtered_ids)]
+    scores = evaluate_detection(prediction, truth)
+    columns = st.columns(6)
+    for column, key in zip(columns, ["true_positives", "false_positives", "false_negatives", "precision", "recall", "f1"]):
+        value = f"{scores[key]:.1%}" if key in ("precision", "recall", "f1") else f"{scores[key]:,}"
+        column.metric(key.replace("_", " ").title(), value)
+    if prediction.empty:
+        st.success("No anomalies detected in this filtered cohort.")
+    else:
+        st.dataframe(prediction, hide_index=True, use_container_width=True)
+    st.caption("Predictions are computed from filtered source rows. Ground-truth labels are loaded only after detection, for scoring.")
+
+elif page == "Data Quality":
+    report_path = root / "validation_report.json"
     if report_path.exists():
-        import json
-        report=json.loads(report_path.read_text()); st.success(f"Validation status: {report['status']}"); st.json(report["checks"]); st.dataframe(pd.DataFrame([{"Entity":k,"Rows":v} for k,v in report["entity_row_counts"].items()]),hide_index=True,use_container_width=True)
-    st.markdown("#### Integrity exceptions")
-    if len(pred:=detect_anomalies(tables)): st.dataframe(pred,hide_index=True,use_container_width=True)
-    else: st.success("No anomalies detected in the selected source data.")
-    st.caption("Ground-truth labels are separated from detector input and are used only for model evaluation.")
+        report = json.loads(report_path.read_text())
+        if report["status"] == "passed":
+            st.success("Structural integrity checks passed for the full generated dataset.")
+        else:
+            st.error(f"Structural integrity review required: {len(report['errors'])} failed checks.")
+        structural, anomalies = st.columns(2)
+        with structural:
+            st.subheader("Structural integrity · full dataset")
+            st.dataframe(pd.DataFrame([{"Check": name.replace("_", " ").title(), "Result": "PASS" if passed else "FAIL"} for name, passed in report["checks"].items()]), hide_index=True, use_container_width=True)
+        with anomalies:
+            st.subheader("Intentional anomaly evaluation · active filter")
+            st.json(report["anomaly_evaluation"])
+            st.caption("Injected anomalies are scored separately and do not automatically fail foreign-key or schema integrity checks.")
+        st.subheader("Filtered vs generated row counts")
+        st.dataframe(pd.DataFrame([{"Entity": name, "Generated rows": len(tables[name]), "Filtered sessions/events": len(filtered_tables[name]) if name in filtered_tables else "Not session-filtered"} for name in entity_names]), hide_index=True, use_container_width=True)
+        with st.expander("Full-profile validation report"):
+            st.json(report)
+    else:
+        st.error("Validation report is missing. Regenerate the dataset to produce structural checks and a reproducibility manifest.")
+
+st.divider()
+csv_bytes = filtered_tables["journey_events"].to_csv(index=False).encode("utf-8")
+st.download_button("Export filtered events CSV", csv_bytes, file_name="journeyiq_filtered_events.csv", mime="text/csv", help=f"{profile}; {len(filtered_tables['journey_events']):,} rows after the current date, channel, and device filters.")
+st.caption("JourneyIQ · DEMO DATA or FULL DATA is determined from the generated profile row count; filtered dashboards never stand in for full-dataset verification.")

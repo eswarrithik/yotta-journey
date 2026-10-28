@@ -1,12 +1,12 @@
 # Phase 1 local PostgreSQL verification
 
-Requirements: PostgreSQL 15+ and a PostgreSQL GUI/client connected to a **new, empty** database named `yottajourney`. For example, create the database from the client's database browser or run the SQL below while connected to the server's maintenance database:
+Requirements: PostgreSQL 15+ and a PostgreSQL GUI/client connected to a **new, empty** database named `journeyiq`. For example, create the database from the client's database browser or run the SQL below while connected to the server's maintenance database:
 
 ```sql
-CREATE DATABASE yottajourney;
+CREATE DATABASE journeyiq;
 ```
 
-Then connect the SQL client to `yottajourney` and execute the complete `schema.sql` file. Next execute `verify_schema.sql` in the same database. The verification script raises an exception if expected Phase 1 objects, key constraints, or representative indexes are missing; on success it prints the table/view, constraint, and index inventories. The expected tables are the ten core entities plus `cart_items` and `experiment_assignments`; expected views are `cart_order_reconciliation` and `session_identity_exceptions`.
+Then connect the SQL client to `journeyiq` and execute the complete `schema.sql` file. Next execute `verify_schema.sql` in the same database. The verification script raises an exception if expected Phase 1 objects, key constraints, or representative indexes are missing; on success it prints the table/view, constraint, and index inventories. The expected tables are the ten core entities plus `cart_items` and `experiment_assignments`; expected views are `cart_order_reconciliation` and `session_identity_exceptions`.
 
 For file-based verification, open `customer-journey-analytics/schema.sql` in the PostgreSQL client and execute the full file, then open and execute `customer-journey-analytics/verify_schema.sql` against that same database. The schema is designed for a fresh database and intentionally does not drop existing tables. To repeat from scratch, create a new empty database rather than dropping a database containing valuable data.
 

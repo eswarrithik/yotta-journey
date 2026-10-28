@@ -19,6 +19,15 @@ BEGIN
     END IF;
 
     SELECT COUNT(*) INTO actual_count
+    FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name IN ('pages', 'products')
+      AND column_name IN ('effective_from', 'effective_to');
+    IF actual_count <> 4 THEN
+        RAISE EXCEPTION 'Expected effective_from/effective_to on pages and products, found % columns', actual_count;
+    END IF;
+
+    SELECT COUNT(*) INTO actual_count
     FROM information_schema.table_constraints
     WHERE constraint_schema = current_schema() AND constraint_type = 'PRIMARY KEY';
     IF actual_count <> 12 THEN
@@ -61,7 +70,7 @@ BEGIN
         RAISE EXCEPTION 'Missing required indexes: %', missing_indexes;
     END IF;
 
-    RAISE NOTICE 'YottaJourney Phase 1 schema verification passed: 12 tables, PK/FK/UQ constraints, indexes, and 2 audit views.';
+    RAISE NOTICE 'JourneyIQ Phase 1 schema verification passed: 12 tables, PK/FK/UQ constraints, indexes, and 2 audit views.';
 END
 $verify$;
 

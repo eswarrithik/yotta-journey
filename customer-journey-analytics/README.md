@@ -1,43 +1,99 @@
-# YottaJourney · Customer Journey Analytics
+# JourneyIQ · Customer Journey Analytics
 
-A reproducible Python data pipeline and Streamlit analytics workspace for YottaFlex.ai. The generator runs independently from the dashboard and exports deterministic CSV datasets, validation results, and SHA-256 manifests. PostgreSQL DDL is provided for production; SQLAlchemy supports PostgreSQL URLs and SQLite URLs for local evaluation.
+JourneyIQ is a reproducible synthetic customer-journey data pipeline, PostgreSQL schema, validation suite, and Streamlit analytics workspace. It preserves raw source events, applies documented session and funnel rules, and separates intentionally injected anomalies from structural integrity validation.
 
-## Start here
+## Environment and commands
 
-Install `requirements.txt`, then run the module with `PYTHONPATH=src python -m yottajourney.pipeline --output data`. The default seed is `20261022`; defaults produce 100 sessions and roughly 2,000 events. Full generation: add `--full` (100,000 sessions). Optional SQLAlchemy persistence accepts `--database-url` or `DATABASE_URL`, for example `sqlite:///journey.db` or a PostgreSQL SQLAlchemy URL. The pipeline-backed dashboard remains available at `streamlit run app.py`.
+Run these from `customer-journey-analytics/`. Install the Python dependencies:
 
-### Preview the dashboard with DEMO DATA
+```text
+python -m pip install -r requirements.txt
+```
 
-From the `customer-journey-analytics` project directory, launch the first-preview dashboard with:
+Generate the starter profile (seed `20261022`, 100 sessions, approximately 2,000 events):
+
+```text
+PYTHONPATH=src python -m yottajourney.pipeline --output data --seed 20261022
+```
+
+PowerShell equivalent:
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m yottajourney.pipeline --output data --seed 20261022
+```
+
+Generate the full profile (100,000 sessions, approximately 2,000,000 events):
+
+```text
+PYTHONPATH=src python -m yottajourney.pipeline --full --output data-full --seed 20261022
+```
+
+PowerShell equivalent:
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m yottajourney.pipeline --full --output data-full --seed 20261022
+```
+
+Override generation dimensions with `--sessions`, `--customers`, `--chunk-size`, and `--start-date`. For example, use `--sessions 250 --customers 180 --chunk-size 5000` for a custom run. `--chunk-size` bounds database insert batches; CSV generation currently materializes the generated tables in memory. The full profile is configured but has **not been performance-verified as a chunked/streaming CSV generator**. Check available memory before requesting the full profile; do not interpret the selected profile as proof that its requested row counts have completed.
+
+Run the complete test suite:
+
+```text
+python -m pytest -q
+```
+
+Run the deterministic two-output comparison specifically:
+
+```text
+python -m pytest tests/test_pipeline.py::test_reproducibility_compares_same_full_profile_and_serialized_datasets -q
+```
+
+Launch the standalone DEMO DATA dashboard:
 
 ```text
 streamlit run dashboard/app.py
 ```
 
-The browser opens to `http://localhost:8501`; if it does not open automatically, enter that address in your browser. This dashboard uses its own small, deterministic sample data and does not require the full generator or a database. It labels the sample **DEMO DATA** and derives the dashboard's metrics from the generated session, event, customer, and order rows. Install the packages in `requirements.txt` first if needed.
+Launch the dashboard backed by generated CSVs after running the starter generator:
 
-Run automated checks with `pytest`.
+```text
+PYTHONPATH=src streamlit run app.py
+```
 
-Exports include one CSV per relational table, `ground_truth.csv` (evaluation-only anomaly labels), `validation_report.json`, and `reproducibility.json`. Checksums intentionally cover input-entity CSVs, not runtime metadata or the ground-truth labels. The same seed/configuration yields stable sorted rows and serialization.
+On PowerShell, set `$env:PYTHONPATH = "src"` before launching the pipeline-backed dashboard.
 
-## Entity model
+## Data contract and keys
 
-`customers` 1—many `sessions`; session 1—many `journey_events`, carts, orders, support tickets, and events; cart 1—many cart items; product 1—many cart items/events; experiment 1—many assignments, with one assignment per experiment/session; session 1—one derived journey outcome. Events and session/order links preserve both anonymous and consent-authorized customer identifiers. `schema.sql` defines all ten core entities and the CartItem/ExperimentAssignment bridges with PK, FK, unique, check, lifecycle, and timestamp constraints. See [`docs/data_dictionary.md`](docs/data_dictionary.md) for every field and [`docs/relationships.md`](docs/relationships.md) for cardinalities, deletion semantics, and integrity boundaries. The generator's anomaly cases deliberately violate only analytical identity/order/duplicate rules, not parent key integrity.
+`schema.sql` defines ten required core entities—Customer, Session, JourneyEvent, Page, Product, Cart, Order, SupportTicket, Experiment, JourneyOutcome—and the CartItem and ExperimentAssignment bridge tables. Every entity has a deterministic application-assigned primary key. Foreign keys preserve parentage; nullable customer links represent unlinked identities. Unique constraints include cart/product and experiment/session pairs and one current outcome per session. Lifecycle enums, time intervals, optional relationships, cardinalities, and deletion semantics are documented in [`docs/data_dictionary.md`](docs/data_dictionary.md) and [`docs/relationships.md`](docs/relationships.md).
 
-## Phase 1 PostgreSQL schema verification
+The generator writes one stable CSV per entity, `ground_truth.csv`, `validation_report.json`, and `reproducibility.json`. Event occurrence and ingestion timestamps are distinct. Event-time ordering represents the journey; ingestion ordering may differ for the injected out-of-order case. The source contract requires each event's ingestion timestamp to be no earlier than its occurrence timestamp.
 
-Create a fresh `yottajourney` database in your PostgreSQL client with `CREATE DATABASE yottajourney;`, connect to it, and execute the complete `schema.sql` file. Then execute `verify_schema.sql` in that same database. Its assertion block fails on missing tables, keys, indexes, or audit views and prints catalog inventories when successful. The step-by-step instructions and catalog inspection SQL are in [`docs/phase1_verification.md`](docs/phase1_verification.md). The schema targets PostgreSQL 15+ and deliberately does not drop existing objects.
+## Measurement rules
 
-## Event taxonomy and measurement rules
+- **Generated rows** are all entity rows emitted for the selected profile. **Filtered rows** are a dashboard subset determined by active date, channel, and device filters. Dashboard filter summaries show both the selected count and the full generated count. Validation and reproducibility manifests explicitly identify full-profile comparisons; a filtered extract is not compared with a full dataset.
+- Funnel eligibility is a distinct non-bot session with a `session_started` event after the active filters. Stage counts are distinct eligible sessions reaching each event. Stage-to-stage conversion and drop-off use the preceding stage count; overall conversion is distinct eligible sessions with a paid order divided by eligible funnel-entry sessions.
+- Purchase event rows are retained for audit, but order and conversion metrics deduplicate by stable order and session identifiers.
+- Cart abandonment is measured only for eligible cart sessions whose recorded session end has been idle for at least the 30-minute timeout as of the report's event-time as-of. The numerator is mature cart sessions without a paid conversion; the denominator is all mature eligible cart sessions. Recent carts not past timeout are excluded rather than prematurely labeled abandoned.
+- Support contact rate uses distinct filtered sessions with at least one associated support ticket divided by filtered sessions. Support events and tickets are emitted together; a zero result in a filtered cohort is a valid empty state.
 
-Event names: `session_started`, `page_viewed`, `product_viewed`, `added_to_cart`, `checkout_started`, `payment_attempted`, `purchase_completed`, `purchase_failed`, and `support_contacted`. Channel is website/mobile_app; event time is occurrence time and ingestion time is arrival time; properties carry the schema version, device, and bot signal. A session is a source session record; the prescribed inactivity boundary is 30 minutes for sessionization of raw event streams. IDs are immutable and deterministic (CUS, SES, session-scoped EVT, EXP, OUT). Consent denied/unknown sessions do not carry linked customer IDs.
+## Anomalies, ground truth, and validation
 
-Funnel order is Session Started → Product Viewed → Added to Cart → Checkout Started → Purchase Completed. Stage counts are distinct eligible sessions with at least one stage event, filtered by channel/device. Each stage conversion divides by the immediately preceding stage count; first stage is 100%. Overall purchase conversion divides distinct purchase sessions by filtered session count. A session contributes at most one conversion; cart abandonment is carts without a purchase divided by carts. Support contact rate is sessions with ≥1 ticket divided by eligible sessions. Event latency is ingestion minus occurrence; page friction ranks events by observed median ingestion latency and volume. Outcomes derive from observed purchase, checkout, cart, and bot signals in that priority sequence rather than independent labels.
+The generator retains source records and emits expected anomaly labels separately in `ground_truth.csv`. The detector does not consume those labels. It detects out-of-order arrival, consent-invalid identity stitching, repeated conversions for the same order, and bot-signaled sessions. Detection is evaluated against ground truth with true/false positives, false negatives, precision, recall, and F1. Baseline bot-signaled sessions are also labeled so the score reflects the complete generated truth set.
 
-## Anomalies and quality
+Structural checks (primary-key uniqueness, foreign keys, enum domains, event/ingestion time validity, effective assignment dates, and cart/order total reconciliation) are reported separately from intentional anomaly metrics. An injected consent exception is expected to be detected but does not by itself fail parent-key integrity.
 
-After a baseline is generated, the starter dataset injects four traceable examples: out-of-order arrivals with nonnegative per-event latency, unauthorized identity linkage on a denied-consent session, a duplicate purchase event, and bot-signaled activity. The detector consumes only source event/session fields; ground truth is loaded only for precision/recall/F1 evaluation. Validation reports include per-table row counts, PK/FK checks, funnel counts, purchase reconciliation, and exception notes. Database uniqueness is enforced at insertion when using the production schema; raw source event rows are preserved in CSV output.
+## Database schema application
 
-## Scale note
+The SQL schema targets PostgreSQL 15+. Apply `schema.sql` to a fresh database and then run `verify_schema.sql`; instructions and expected objects are in [`docs/phase1_verification.md`](docs/phase1_verification.md). When using `--database-url`, the generator appends to the existing schema tables and refuses to load when required tables are missing; it does not replace tables or silently discard schema constraints. The supported production database path is PostgreSQL with the schema applied first.
 
-The `--full` profile switches the same seeded generation rules to 100,000 sessions / approximately 2,000,000 events. Database writes use bounded SQLAlchemy batches; tune `chunk_size` for the host. CSV tables are generated separately and remain the canonical export boundary.
+## Known verification limits
+
+The current available environment for this audit has no Python/test execution capability. The source and test suite have been updated, but no Python tests, generator runs, checksum comparison, PostgreSQL schema execution, or full-scale performance test can be claimed as executed here. Full generation currently stores the generated rows in memory before writing CSVs, so chunked CSV generation remains incomplete and the full-scale resource profile is unverified. See the completion report for tested results and remaining gaps.
+
+The in-browser JourneyIQ Preview is a separate 100-session DEMO DATA presentation; it is not a substitute for the canonical Python-generated CSV dataset or for its scale verification.
+
+## PostgreSQL schema verification
+
+Create a new database named `journeyiq`, connect to it, and execute `schema.sql`, followed by `verify_schema.sql`. The verification script checks the ten entities, bridge tables, keys, indexes, and audit views. The documented relationship model keeps foreign-key deletion behavior restrictive so historical source records remain traceable.

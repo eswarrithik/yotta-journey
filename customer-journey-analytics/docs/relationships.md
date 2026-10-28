@@ -1,4 +1,4 @@
-# YottaJourney relationship model
+# JourneyIQ relationship model
 
 `schema.sql` is the executable PostgreSQL DDL. `data_dictionary.md` is the field-level contract. All relationships are physical foreign keys except the consent/identity validity rule, which is a cross-record analytics validation so source anomalies remain detectable.
 

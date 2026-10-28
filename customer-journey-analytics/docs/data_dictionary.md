@@ -1,4 +1,4 @@
-# YottaJourney data dictionary
+# JourneyIQ data dictionary
 
 PostgreSQL 15+ is the production target. Names below match the canonical SQL tables and CSV export names. All timestamps are UTC `TIMESTAMPTZ`; identifier values are application-assigned, immutable strings. `PK`, `FK`, and `UQ` denote primary, foreign, and unique keys. `NOT NULL` means required. A nullable FK is intentionally absent when identity or linkage is unavailable. Check constraints in `schema.sql` are authoritative for enumerations and numeric limits.
 
@@ -62,8 +62,10 @@ Versionable catalog of experience locations used for page-level friction analysi
 | `page_name` | `TEXT` | Yes | | Human-readable name. |
 | `page_type` | `VARCHAR(24)` | Yes | `landing`, `discovery`, `product`, `cart`, `checkout`, `payment`, `support`, `campaign` | Page classification. |
 | `is_active` | `BOOLEAN` | Yes | defaults `TRUE` | Whether the page is currently active. |
+| `effective_from` | `TIMESTAMPTZ` | Yes | | Beginning of the page catalog version's validity. |
+| `effective_to` | `TIMESTAMPTZ` | No | `>= effective_from` | Exclusive catalog end is not used in the starter; NULL means no scheduled end. |
 
-Cardinality: page `1 → 0..N` journey events. Inactive pages remain for historical references.
+Cardinality: page `1 → 0..N` journey events. Inactive pages remain for historical references; events should fall in the referenced page version's effective interval.
 
 ## 5. Product — `products`
 Product catalog snapshot used to contextualize views, cart line items, and orders.
@@ -75,8 +77,10 @@ Product catalog snapshot used to contextualize views, cart line items, and order
 | `category` | `TEXT` | Yes | | Product category. |
 | `unit_price` | `NUMERIC(12,2)` | Yes | `>= 0` | Current catalog unit price in the product's configured currency (starter data uses USD). |
 | `is_active` | `BOOLEAN` | Yes | defaults `TRUE` | Product availability state. |
+| `effective_from` | `TIMESTAMPTZ` | Yes | | Beginning of this product catalog version's validity. |
+| `effective_to` | `TIMESTAMPTZ` | No | `>= effective_from` | NULL means no scheduled end; price snapshots remain on cart items. |
 
-Cardinality: product `1 → 0..N` events and cart items. Cart-item unit price snapshots preserve the price at cart time.
+Cardinality: product `1 → 0..N` events and cart items. Product/page changes are represented as effective-dated versions; cart-item unit price snapshots preserve the price at cart time.
 
 ## 6. Cart — `carts`
 A session's cart lifecycle record.

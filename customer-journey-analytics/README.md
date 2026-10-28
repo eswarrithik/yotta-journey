@@ -10,7 +10,11 @@ Exports include one CSV per relational table, `ground_truth.csv` (evaluation-onl
 
 ## Entity model
 
-`customers` 1—many `sessions`; session 1—many `journey_events`, carts, orders, support tickets, and events; cart 1—many cart items; product 1—many cart items/events; experiment 1—many assignments, with one assignment per experiment/session; session 1—one derived journey outcome. Events and session/order links preserve both anonymous and consent-authorized customer identifiers. The PostgreSQL schema in `schema.sql` includes PK, FK, unique, check, lifecycle, and timestamp constraints. The generator's anomaly cases deliberately violate only the described analytical conditions, not parent key integrity.
+`customers` 1—many `sessions`; session 1—many `journey_events`, carts, orders, support tickets, and events; cart 1—many cart items; product 1—many cart items/events; experiment 1—many assignments, with one assignment per experiment/session; session 1—one derived journey outcome. Events and session/order links preserve both anonymous and consent-authorized customer identifiers. `schema.sql` defines all ten core entities and the CartItem/ExperimentAssignment bridges with PK, FK, unique, check, lifecycle, and timestamp constraints. See [`docs/data_dictionary.md`](docs/data_dictionary.md) for every field and [`docs/relationships.md`](docs/relationships.md) for cardinalities, deletion semantics, and integrity boundaries. The generator's anomaly cases deliberately violate only analytical identity/order/duplicate rules, not parent key integrity.
+
+## Phase 1 PostgreSQL schema verification
+
+Create a fresh `yottajourney` database in your PostgreSQL client with `CREATE DATABASE yottajourney;`, connect to it, and execute the complete `schema.sql` file. Then execute `verify_schema.sql` in that same database. Its assertion block fails on missing tables, keys, indexes, or audit views and prints catalog inventories when successful. The step-by-step instructions and catalog inspection SQL are in [`docs/phase1_verification.md`](docs/phase1_verification.md). The schema targets PostgreSQL 15+ and deliberately does not drop existing objects.
 
 ## Event taxonomy and measurement rules
 

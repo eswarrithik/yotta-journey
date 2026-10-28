@@ -4,7 +4,19 @@ A reproducible Python data pipeline and Streamlit analytics workspace for YottaF
 
 ## Start here
 
-Install `requirements.txt`, then run the module with `PYTHONPATH=src python -m yottajourney.pipeline --output data`. The default seed is `20261022`; defaults produce 100 sessions and roughly 2,000 events. Full generation: add `--full` (100,000 sessions). Optional SQLAlchemy persistence accepts `--database-url` or `DATABASE_URL`, for example `sqlite:///journey.db` or a PostgreSQL SQLAlchemy URL. Launch the dashboard separately with `streamlit run app.py`. Run automated checks with `pytest`.
+Install `requirements.txt`, then run the module with `PYTHONPATH=src python -m yottajourney.pipeline --output data`. The default seed is `20261022`; defaults produce 100 sessions and roughly 2,000 events. Full generation: add `--full` (100,000 sessions). Optional SQLAlchemy persistence accepts `--database-url` or `DATABASE_URL`, for example `sqlite:///journey.db` or a PostgreSQL SQLAlchemy URL. The pipeline-backed dashboard remains available at `streamlit run app.py`.
+
+### Preview the dashboard with DEMO DATA
+
+From the `customer-journey-analytics` project directory, launch the first-preview dashboard with:
+
+```text
+streamlit run dashboard/app.py
+```
+
+The browser opens to `http://localhost:8501`; if it does not open automatically, enter that address in your browser. This dashboard uses its own small, deterministic sample data and does not require the full generator or a database. It labels the sample **DEMO DATA** and derives the dashboard's metrics from the generated session, event, customer, and order rows. Install the packages in `requirements.txt` first if needed.
+
+Run automated checks with `pytest`.
 
 Exports include one CSV per relational table, `ground_truth.csv` (evaluation-only anomaly labels), `validation_report.json`, and `reproducibility.json`. Checksums intentionally cover input-entity CSVs, not runtime metadata or the ground-truth labels. The same seed/configuration yields stable sorted rows and serialization.
 

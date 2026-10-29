@@ -1,13 +1,15 @@
 from pathlib import Path
 import json
 import sys
+from tempfile import TemporaryDirectory
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
-from yottajourney.analytics import analyze, detect_anomalies, evaluate_detection
+from yottajourney.analytics import evaluate_detection
+from yottajourney.streaming import analyze_csv, detect_anomalies_csv, export_filtered_events
 
 st.set_page_config(page_title="JourneyIQ · Customer Analytics", page_icon="↗", layout="wide")
 st.markdown("<style>.block-container{padding-top:1.5rem}.stMetric{background:#fff;border:1px solid #e4e9ed;padding:16px;border-radius:16px}.stApp{background:#f6f8fb}</style>", unsafe_allow_html=True)
@@ -24,7 +26,8 @@ if not (root / "sessions.csv").exists():
     st.stop()
 
 entity_names = ["customers", "sessions", "journey_events", "pages", "products", "carts", "cart_items", "orders", "support_tickets", "experiments", "experiment_assignments", "journey_outcomes"]
-tables = {name: pd.read_csv(root / f"{name}.csv") for name in entity_names}
+tables = {name: pd.read_csv(root / f"{name}.csv") for name in entity_names if name != "journey_events"}
+event_path = root / "journey_events.csv"
 for name, frame in tables.items():
     for column in frame.columns:
         if column.endswith("_at") or column in ("event_timestamp", "ingestion_timestamp"):
@@ -41,27 +44,24 @@ product_id = st.sidebar.selectbox("Product", ["All", *product_names], format_fun
 days = st.sidebar.selectbox("Date range", [7, 30, 90], index=1, format_func=lambda value: f"Last {value} days")
 latest = tables["sessions"].started_at.max()
 cutoff = latest - pd.Timedelta(days=days)
-filtered_sessions = tables["sessions"]
+session_cohort = tables["sessions"]
 if channel != "All":
-    filtered_sessions = filtered_sessions[filtered_sessions.channel.eq(channel)]
+    session_cohort = session_cohort[session_cohort.channel.eq(channel)]
 if device != "All":
-    filtered_sessions = filtered_sessions[filtered_sessions.device_type.eq(device)]
-if product_id != "All":
-    matching_products = set(tables["journey_events"].loc[tables["journey_events"].product_id.eq(product_id), "session_id"])
-    filtered_sessions = filtered_sessions[filtered_sessions.session_id.isin(matching_products)]
-filtered_sessions = filtered_sessions[filtered_sessions.started_at.ge(cutoff)]
-filtered_ids = set(filtered_sessions.session_id)
+    session_cohort = session_cohort[session_cohort.device_type.eq(device)]
+session_cohort = session_cohort[session_cohort.started_at.ge(cutoff)]
+result = analyze_csv(event_path, tables, channel, device, product_id, start_at=cutoff, as_of=tables["sessions"].ended_at.max(), chunk_size=20_000)
+filtered_ids = result["filtered_session_ids"]
+filtered_sessions = session_cohort[session_cohort.session_id.astype(str).isin(filtered_ids)]
 filtered_tables = dict(tables)
 filtered_tables["sessions"] = filtered_sessions
-filtered_tables["journey_events"] = tables["journey_events"][tables["journey_events"].session_id.isin(filtered_ids)]
-filtered_tables["orders"] = tables["orders"][tables["orders"].session_id.isin(filtered_ids)]
-filtered_tables["carts"] = tables["carts"][tables["carts"].session_id.isin(filtered_ids)]
-filtered_tables["support_tickets"] = tables["support_tickets"][tables["support_tickets"].session_id.isin(filtered_ids)]
-result = analyze(tables, channel, device, product_id=product_id, start_at=cutoff, as_of=tables["journey_events"].event_timestamp.max())
+filtered_tables["orders"] = tables["orders"][tables["orders"].session_id.astype(str).isin(filtered_ids)]
+filtered_tables["carts"] = tables["carts"][tables["carts"].session_id.astype(str).isin(filtered_ids)]
+filtered_tables["support_tickets"] = tables["support_tickets"][tables["support_tickets"].session_id.astype(str).isin(filtered_ids)]
 
 st.markdown(f"**{profile}** · Seed 20261022 · active filters: {days} days, {channel}, {device}, {product_id}")
 st.title(page)
-st.caption(f"Filtered {result['sessions']:,} / {len(tables['sessions']):,} sessions · {len(filtered_tables['journey_events']):,} / {len(tables['journey_events']):,} events")
+st.caption(f"Filtered {result['sessions']:,} / {len(tables['sessions']):,} sessions · {result['filtered_event_count']:,} / {json.loads((root / 'validation_report.json').read_text())['entity_row_counts']['journey_events']:,} events")
 if result["sessions"] == 0:
     st.info("No sessions match the active date, channel, device, and product filters. Broaden the date range or reset the cohort filters.")
 
@@ -127,7 +127,7 @@ elif page == "Channel Analysis":
     st.info("A filtered channel can legitimately have zero support contacts; this is a cohort result, not missing data.")
 
 elif page == "Anomaly Monitoring":
-    prediction = detect_anomalies(filtered_tables)
+    prediction = detect_anomalies_csv(event_path, tables["sessions"], filtered_ids, chunk_size=20_000)
     truth_path = root / "ground_truth.csv"
     truth = pd.read_csv(truth_path) if truth_path.exists() else pd.DataFrame(columns=["entity_id", "issue_type"])
     truth = truth[truth.entity_id.isin(filtered_ids)]
@@ -166,17 +166,38 @@ elif page == "Data Quality":
             st.json(report["anomaly_evaluation"])
             st.caption("Injected anomalies are scored separately and do not automatically fail foreign-key or schema integrity checks.")
         st.subheader("Filtered vs generated row counts")
-        st.dataframe(pd.DataFrame([{"Entity": name, "Generated rows": len(tables[name]), "Filtered sessions/events": len(filtered_tables[name]) if name in filtered_tables else "Not session-filtered"} for name in entity_names]), hide_index=True, use_container_width=True)
+        filtered_count_rows = []
+        for name in entity_names:
+            if name == "journey_events":
+                filtered_count = result["filtered_event_count"]
+            elif name == "sessions":
+                filtered_count = result["sessions"]
+            else:
+                filtered_count = len(filtered_tables[name]) if name in filtered_tables else "Not session-filtered"
+            filtered_count_rows.append({"Entity": name, "Generated rows": report["entity_row_counts"][name], "Filtered sessions/events": filtered_count})
+        st.dataframe(pd.DataFrame(filtered_count_rows), hide_index=True, use_container_width=True)
         with st.expander("Full-profile validation report"):
             st.json(report)
     else:
         st.error("Validation report is missing. Regenerate the dataset to produce structural checks and a reproducibility manifest.")
 
 st.divider()
-filtered_events = filtered_tables["journey_events"]
-csv_bytes = filtered_events.to_csv(index=False).encode("utf-8")
-json_bytes = json.dumps({"dataset": profile, "filters": {"days": days, "channel": channel, "device": device, "product_id": product_id}, "generated_sessions": len(tables["sessions"]), "filtered_sessions": len(filtered_sessions), "generated_events": len(tables["journey_events"]), "filtered_events": len(filtered_events), "events": json.loads(filtered_events.to_json(orient="records", date_format="iso"))}, indent=2).encode("utf-8")
-left_export, right_export = st.columns(2)
-left_export.download_button("Export filtered events CSV", csv_bytes, file_name="journeyiq_filtered_events.csv", mime="text/csv", help=f"{profile}; {len(filtered_events):,} rows after the current date, channel, device, and product filters.")
-right_export.download_button("Export filtered events JSON", json_bytes, file_name="journeyiq_filtered_events.json", mime="application/json", help=f"{profile}; {len(filtered_events):,} rows after the current date, channel, device, and product filters.")
+metadata = {
+    "dataset": profile,
+    "filters": {"days": days, "channel": channel, "device": device, "product_id": product_id},
+    "generated_sessions": len(tables["sessions"]),
+    "filtered_sessions": result["sessions"],
+    "generated_events": json.loads((root / "validation_report.json").read_text())["entity_row_counts"]["journey_events"],
+    "filtered_events": result["filtered_event_count"],
+}
+with TemporaryDirectory(prefix="journeyiq-export-") as temporary:
+    csv_path = Path(temporary) / "journeyiq_filtered_events.csv"
+    json_path = Path(temporary) / "journeyiq_filtered_events.json"
+    export_filtered_events(event_path, csv_path, filtered_ids, chunk_size=20_000)
+    export_filtered_events(event_path, json_path, filtered_ids, chunk_size=20_000, as_json=True, metadata=metadata)
+    left_export, right_export = st.columns(2)
+    with csv_path.open("rb") as csv_file:
+        left_export.download_button("Export filtered events CSV", csv_file, file_name=csv_path.name, mime="text/csv", help=f"{profile}; {result['filtered_event_count']:,} filtered event rows.")
+    with json_path.open("rb") as json_file:
+        right_export.download_button("Export filtered events JSON", json_file, file_name=json_path.name, mime="application/json", help=f"{profile}; {result['filtered_event_count']:,} filtered event rows.")
 st.caption("JourneyIQ · DEMO DATA or FULL DATA is determined from the generated profile row count; filtered dashboards never stand in for full-dataset verification.")

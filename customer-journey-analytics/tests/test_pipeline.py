@@ -8,6 +8,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 from yottajourney.analytics import analyze, detect_anomalies, evaluate_detection
 from yottajourney.pipeline import Config, generate, verify_reproducibility
+from yottajourney.streaming import analyze_csv, detect_anomalies_csv, export_filtered_events
 
 
 @pytest.fixture(scope="module")
@@ -21,6 +22,7 @@ def test_default_starter_profile_and_entity_contract(starter):
     tables = result["tables"]
     assert len(tables["sessions"]) == 100
     assert len(tables["journey_events"]) == 2_000
+    assert tables["journey_events"].groupby("session_id").size().eq(20).all()
     assert len(tables) == 12
     assert result["validation"]["status"] == "passed"
     assert all(result["validation"]["checks"].values())
@@ -143,9 +145,9 @@ def test_csv_output_is_independent_of_event_buffer_size(tmp_path):
 
     outputs = [tmp_path / "small-buffer", tmp_path / "large-buffer"]
     first = generate(Config(seed=20261022, sessions=30, customers=20, chunk_size=64), outputs[0])
-    second = generate(Config(seed=20261022, sessions=30, customers=20, chunk_size=257), outputs[1])
+    second = generate(Config(seed=20261022, sessions=30, customers=20, chunk_size=257), outputs[1], retain_tables=False)
     assert len(first["tables"]["journey_events"]) == 600
-    assert len(second["tables"]["journey_events"]) == 600
+    assert second["validation"]["entity_row_counts"]["journey_events"] == 600
     for name in ["journey_events.csv", "sessions.csv", "ground_truth.csv"]:
         hashes = [hashlib.sha256((output / name).read_bytes()).hexdigest() for output in outputs]
         assert hashes[0] == hashes[1]
@@ -194,3 +196,62 @@ def test_full_profile_configuration_is_exact_but_not_performance_claim():
     assert config.sessions * 20 == 2_000_000
     assert config.seed == 20261022
     assert config.chunk_size > 0
+
+
+def test_chunked_analytics_matches_in_memory_filters_and_funnel(starter):
+    result, output = starter
+    tables = result["tables"]
+    product_id = tables["products"].product_id.iloc[0]
+    as_of = pd.to_datetime(tables["journey_events"].event_timestamp, utc=True).max()
+    expected = analyze(tables, channel="website", product_id=product_id, start_at="2026-01-01", as_of=as_of)
+    streamed = analyze_csv(
+        output / "journey_events.csv", tables, channel="website", product_id=product_id,
+        start_at="2026-01-01", as_of=as_of, chunk_size=17,
+    )
+    for key in [
+        "sessions", "eligible_sessions", "unique_customers", "purchases", "purchase_order_count",
+        "abandoned_cart_sessions", "eligible_cart_sessions", "support_sessions", "checkout_failures",
+        "anonymous_sessions", "identified_sessions", "channel_sessions",
+    ]:
+        assert streamed[key] == expected[key]
+    for key in ["conversion_rate", "abandonment_rate", "support_contact_rate", "median_latency_seconds"]:
+        assert streamed[key] == pytest.approx(expected[key])
+    assert streamed["funnel"] == expected["funnel"]
+    assert streamed["filtered_event_count"] == len(
+        tables["journey_events"][tables["journey_events"].session_id.astype(str).isin(streamed["filtered_session_ids"])]
+    )
+    pd.testing.assert_frame_equal(
+        streamed["friction"].sort_values("page_id").reset_index(drop=True),
+        expected["friction"].sort_values("page_id").reset_index(drop=True),
+        check_dtype=False,
+    )
+
+
+def test_chunked_anomalies_and_filtered_csv_json_exports_match_full_data(starter, tmp_path):
+    result, output = starter
+    tables = result["tables"]
+    selected_ids = set(tables["sessions"].head(20).session_id.astype(str))
+    streamed = detect_anomalies_csv(output / "journey_events.csv", tables["sessions"], selected_ids, chunk_size=31)
+    expected = detect_anomalies(tables)
+    expected = expected[expected.entity_id.isin(selected_ids)].sort_values(["entity_id", "issue_type"]).reset_index(drop=True)
+    streamed = streamed.sort_values(["entity_id", "issue_type"]).reset_index(drop=True)
+    pd.testing.assert_frame_equal(streamed, expected, check_dtype=False)
+
+    csv_path = tmp_path / "filtered.csv"
+    json_path = tmp_path / "filtered.json"
+    export_filtered_events(output / "journey_events.csv", csv_path, selected_ids, chunk_size=37)
+    export_filtered_events(output / "journey_events.csv", json_path, selected_ids, chunk_size=37, as_json=True, metadata={"filtered_sessions": len(selected_ids)})
+    csv_events = pd.read_csv(csv_path)
+    json_payload = json.loads(json_path.read_text())
+    assert len(csv_events) == len(json_payload["events"]) == len(selected_ids) * 20
+    assert json_payload["filtered_sessions"] == len(selected_ids)
+
+
+def test_report_generation_can_omit_canonical_event_dataframe(tmp_path):
+    result = generate(Config(seed=20261022, sessions=12, customers=9, chunk_size=11), tmp_path, retain_tables=False)
+    assert "journey_events" not in result["tables"]
+    report = result["validation"]
+    assert report["entity_row_counts"]["sessions"] == 12
+    assert report["entity_row_counts"]["journey_events"] == 240
+    assert report["checks"]["event_volume_target"]
+    assert report["status"] == "passed"

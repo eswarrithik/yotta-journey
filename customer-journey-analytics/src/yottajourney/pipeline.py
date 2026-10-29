@@ -129,7 +129,8 @@ def generate(config: Config = Config(), output: str | Path = "data", database_ur
             tickets.append({"ticket_id":f"SUP-{n:06d}","session_id":sid,"customer_id":cust.customer_id if linked else None,"created_at":last_occurred.isoformat(),"status":"resolved","reason":str(rng.choice(["payment issue","delivery","product question"]))})
         assignments.append({"assignment_id":f"ASN-{n:06d}","experiment_id":f"EXP-2026-{(n%3)+1:06d}","session_id":sid,"variant":"control" if n%2 else "treatment","assigned_at":began.isoformat()})
         funnel_complete="purchase_completed" in sequence
-        outcomes.append({"outcome_id":deterministic_id("OUT",n),"session_id":sid,"outcome_type":"converted" if funnel_complete else ("bot" if bot else "checkout_abandoned" if "checkout_started" in sequence else "cart_abandoned" if "added_to_cart" in sequence else "browsed"),"outcome_at":(began+pd.Timedelta(minutes=10)).isoformat(),"rule_version":"1.0"})
+        outcome_type="bot" if bot else "converted" if funnel_complete else "checkout_abandoned" if "checkout_started" in sequence else "cart_abandoned" if "added_to_cart" in sequence else "support_contacted" if has_support else "browsed"
+        outcomes.append({"outcome_id":deterministic_id("OUT",n),"session_id":sid,"outcome_type":outcome_type,"outcome_at":(began+pd.Timedelta(minutes=10)).isoformat(),"rule_version":"1.0"})
     if config.sessions >= 4:
         s1=deterministic_id("SES",1); s2=deterministic_id("SES",2); s4=deterministic_id("SES",4)
         ground.extend([{"entity_id":s1,"issue_type":"out_of_order_arrival"},{"entity_id":s2,"issue_type":"identity_stitching"},{"entity_id":s4,"issue_type":"bot_traffic"}])
@@ -186,7 +187,7 @@ def generate(config: Config = Config(), output: str | Path = "data", database_ur
         "allowed_order_lifecycle":bool(tables["orders"].status.isin(["pending","paid","failed","refunded"]).all()),
         "allowed_support_lifecycle":bool(tables["support_tickets"].status.isin(["open","pending","resolved","closed"]).all()),
         "allowed_experiment_lifecycle":bool(tables["experiments"].status.isin(["draft","active","completed","paused"]).all()),
-        "allowed_outcome_types":bool(tables["journey_outcomes"].outcome_type.isin(["converted","checkout_abandoned","cart_abandoned","browsed","bot"]).all()),
+        "allowed_outcome_types":bool(tables["journey_outcomes"].outcome_type.isin(["converted","checkout_abandoned","cart_abandoned","support_contacted","browsed","bot"]).all()),
         "outcome_one_per_session":bool(tables["journey_outcomes"].session_id.is_unique),
         "session_timestamp_order":bool((pd.to_datetime(tables["sessions"].ended_at,utc=True)>=pd.to_datetime(tables["sessions"].started_at,utc=True)).all()),
         "sessionization_timeout":bool(((pd.to_datetime(tables["sessions"].ended_at,utc=True)-pd.to_datetime(tables["sessions"].started_at,utc=True))<pd.Timedelta(minutes=30)).all()),

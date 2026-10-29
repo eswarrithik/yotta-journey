@@ -120,7 +120,7 @@ CREATE TABLE experiment_assignments (
 CREATE TABLE journey_outcomes (
     outcome_id VARCHAR(32) PRIMARY KEY CHECK (outcome_id ~ '^OUT-SES-[0-9]{4}-[0-9]{6}$'),
     session_id VARCHAR(20) NOT NULL UNIQUE REFERENCES sessions(session_id),
-    outcome_type VARCHAR(32) NOT NULL CHECK (outcome_type IN ('converted','checkout_abandoned','cart_abandoned','browsed','bot')),
+    outcome_type VARCHAR(32) NOT NULL CHECK (outcome_type IN ('converted','checkout_abandoned','cart_abandoned','support_contacted','browsed','bot')),
     outcome_at TIMESTAMPTZ NOT NULL,
     rule_version VARCHAR(12) NOT NULL CHECK (length(btrim(rule_version)) > 0)
 );

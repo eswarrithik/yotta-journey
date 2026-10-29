@@ -96,6 +96,11 @@ def test_duplicate_source_events_do_not_inflate_order_or_conversion_counts(start
     purchase_order_ids = purchases.event_properties.map(lambda value: json.loads(value).get("order_id"))
     assert purchases.event_id.is_unique
     assert purchase_order_ids.nunique() < len(purchases)
+    duplicate = purchases[purchases.event_properties.map(lambda value: json.loads(value).get("duplicate_source"))].iloc[0]
+    source_id = json.loads(duplicate.event_properties)["duplicate_source_event_id"]
+    source = purchases.set_index("event_id").loc[source_id]
+    assert pd.to_datetime(source.event_timestamp, utc=True) < pd.to_datetime(duplicate.event_timestamp, utc=True)
+    assert json.loads(source.event_properties)["order_id"] == json.loads(duplicate.event_properties)["order_id"]
     assert metrics["purchase_order_count"] == tables["orders"].query("status == 'paid'").order_id.nunique()
     assert metrics["purchases"] <= metrics["eligible_sessions"]
 
@@ -153,9 +158,9 @@ def test_csv_output_is_independent_of_event_buffer_size(tmp_path):
         assert hashes[0] == hashes[1]
 
 
-def test_reproducibility_compares_same_full_profile_and_serialized_datasets(tmp_path):
+def test_starter_reproducibility_compares_serialized_datasets(tmp_path):
     output = tmp_path / "starter"
-    comparison = verify_reproducibility(Config(seed=20261022, sessions=30, customers=20), output)
+    comparison = verify_reproducibility(Config(seed=20261022), output)
     assert comparison["row_counts_match"]
     assert comparison["sha256_match"]
     assert comparison["derived_metrics_match"]
@@ -165,7 +170,7 @@ def test_reproducibility_compares_same_full_profile_and_serialized_datasets(tmp_
     assert "ground_truth.csv" in comparison["datasets_compared"]
     manifest = json.loads((output / "reproducibility.json").read_text())
     assert manifest["comparison"]["identical"]
-    assert manifest["entity_row_counts"]["sessions"] == 30
+    assert manifest["entity_row_counts"]["sessions"] == 100
 
 
 def test_date_and_channel_filters_propagate_to_funnel_and_support(starter):
@@ -241,8 +246,13 @@ def test_chunked_anomalies_and_filtered_csv_json_exports_match_full_data(starter
     json_path = tmp_path / "filtered.json"
     export_filtered_events(output / "journey_events.csv", csv_path, selected_ids, chunk_size=37)
     export_filtered_events(output / "journey_events.csv", json_path, selected_ids, chunk_size=37, as_json=True, metadata={"filtered_sessions": len(selected_ids)})
-    csv_events = pd.read_csv(csv_path)
+    csv_events = pd.read_csv(csv_path, dtype="string").fillna("")
     json_payload = json.loads(json_path.read_text())
+    expected_events = tables["journey_events"][tables["journey_events"].session_id.astype(str).isin(selected_ids)].reset_index(drop=True)
+    expected_csv = expected_events.astype("string").fillna("")
+    pd.testing.assert_frame_equal(csv_events.reset_index(drop=True), expected_csv, check_dtype=False)
+    expected_json = json.loads(expected_events.to_json(orient="records", date_format="iso"))
+    assert json_payload["events"] == expected_json
     assert len(csv_events) == len(json_payload["events"]) == len(selected_ids) * 20
     assert json_payload["filtered_sessions"] == len(selected_ids)
 

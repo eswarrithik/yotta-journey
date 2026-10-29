@@ -98,8 +98,9 @@ def generate(config: Config = Config(), output: str | Path = "data", database_ur
         original_purchase_position=None
         if config.sessions>=4 and n==1:
             original_purchase_position=sequence.index("purchase_completed")
-            duplicate_position=sequence.index("page_viewed")
-            sequence[duplicate_position]="purchase_completed"
+            sequence.pop(1)
+            duplicate_position=original_purchase_position
+            sequence.insert(duplicate_position,"purchase_completed")
             ground.append({"entity_id":sid,"issue_type":"duplicate_conversion"})
         elapsed_seconds=0; last_occurred=began
         support_page=next((row.page_id for row in pages.itertuples() if row.page_type=="support"),pages.iloc[0].page_id)
@@ -109,7 +110,7 @@ def generate(config: Config = Config(), output: str | Path = "data", database_ur
             delay=1800 if config.sessions>=4 and n==1 and ei==1 else 2 if config.sessions>=4 and n==1 and ei==2 else int(rng.integers(1,6))
             properties={"device_type":device,"bot_signal":bot,"schema_version":"1.0","attempt":1 if etype.startswith("purchase") else None,"order_id":f"ORD-{n:06d}" if etype=="purchase_completed" else None}
             if duplicate_position is not None and ei==duplicate_position+1:
-                properties["duplicate_source_event_id"]=f"EVT-{sid}-{original_purchase_position+1:06d}"; properties["duplicate_source"]=True
+                properties["duplicate_source_event_id"]=f"EVT-{sid}-{duplicate_position:06d}"; properties["duplicate_source"]=True
             ev={"event_id":f"EVT-{sid}-{ei:06d}","session_id":sid,"customer_id":cust.customer_id if linked else None,"anonymous_id":anon,"event_type":etype,"event_timestamp":occurred.isoformat(),"ingestion_timestamp":(occurred+pd.Timedelta(seconds=delay)).isoformat(),"channel":channel,"page_id":support_page if etype=="support_contacted" else page if etype in ("page_viewed","product_viewed","checkout_started","payment_attempted") else None,"product_id":product.product_id if etype in ("product_viewed","added_to_cart","purchase_completed") else None,"event_properties":_json(properties),"event_version":"1.0"}
             if config.sessions>=4 and n==2 and ei==1:
                 ev["customer_id"]=customers.iloc[0].customer_id

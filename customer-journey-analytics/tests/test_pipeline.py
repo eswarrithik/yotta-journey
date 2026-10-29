@@ -142,8 +142,10 @@ def test_csv_output_is_independent_of_event_buffer_size(tmp_path):
     import hashlib
 
     outputs = [tmp_path / "small-buffer", tmp_path / "large-buffer"]
-    generate(Config(seed=20261022, sessions=30, customers=20, chunk_size=64), outputs[0])
-    generate(Config(seed=20261022, sessions=30, customers=20, chunk_size=257), outputs[1])
+    first = generate(Config(seed=20261022, sessions=30, customers=20, chunk_size=64), outputs[0])
+    second = generate(Config(seed=20261022, sessions=30, customers=20, chunk_size=257), outputs[1])
+    assert len(first["tables"]["journey_events"]) == 600
+    assert len(second["tables"]["journey_events"]) == 600
     for name in ["journey_events.csv", "sessions.csv", "ground_truth.csv"]:
         hashes = [hashlib.sha256((output / name).read_bytes()).hexdigest() for output in outputs]
         assert hashes[0] == hashes[1]

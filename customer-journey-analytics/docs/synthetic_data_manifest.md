@@ -6,8 +6,8 @@
 | Source class | Programmatically generated synthetic data; no customer or production data is imported |
 | Generator | `src/yottajourney/pipeline.py` (`generate`) |
 | Seed | `20261022` by default; override with `--seed` |
-| Starter profile | 100 sessions, 70 customers, 12 pages, 20 products; event volume approximately 2,000 (variable by generated journey) |
-| Full profile target | 100,000 sessions and approximately 2,000,000 events; configured by `Config.full()` but not run/verified in this environment |
+| Starter profile | 100 sessions, 70 customers, 12 pages, 20 products; code contract targets exactly 2,000 events, including injected duplicate evidence |
+| Full profile target | 100,000 sessions and exactly 2,000,000 target events by the 20-events-per-session contract; configured by `Config.full()` but not run/verified in this environment |
 | Output | One CSV per entity/bridge table, separate `ground_truth.csv`, plus `validation_report.json` and `reproducibility.json` |
 | IDs | Deterministic formatted IDs; event sequence is scoped to a deterministic session ID |
 | Serialization | UTF-8 CSV, stable column and row sorting, LF line endings, empty string for missing values |

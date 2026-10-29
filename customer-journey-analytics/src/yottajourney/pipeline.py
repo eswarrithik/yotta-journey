@@ -11,7 +11,8 @@ from tempfile import TemporaryDirectory
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect
+from sqlalchemy.dialects.postgresql import JSONB
 
 from .analytics import analyze, detect_anomalies, evaluate_detection
 
@@ -123,7 +124,9 @@ def generate(config: Config = Config(), output: str | Path = "data", database_ur
     if event_buffer:
         pd.DataFrame(event_buffer).to_csv(event_path,mode="a",header=not event_path.exists(),index=False,lineterminator="\n",na_rep="")
         event_buffer.clear()
-    tables={"customers":customers,"sessions":pd.DataFrame(sessions),"journey_events":pd.read_csv(event_path),"pages":pages,"products":products,"carts":pd.DataFrame(carts,columns=["cart_id","session_id","customer_id","created_at","state"]),"cart_items":pd.DataFrame(cartitems,columns=["cart_item_id","cart_id","product_id","quantity","unit_price"]),"orders":pd.DataFrame(orders,columns=["order_id","session_id","customer_id","cart_id","ordered_at","status","total_amount","currency"]),"support_tickets":pd.DataFrame(tickets,columns=["ticket_id","session_id","customer_id","created_at","status","reason"]),"experiments":experiments,"experiment_assignments":pd.DataFrame(assignments),"journey_outcomes":pd.DataFrame(outcomes)}
+    event_dtypes={"session_id":"category","customer_id":"category","anonymous_id":"category","event_type":"category","channel":"category","event_version":"category"}
+    tables={"customers":customers,"sessions":pd.DataFrame(sessions),"journey_events":pd.read_csv(event_path,dtype=event_dtypes),"pages":pages,"products":products,"carts":pd.DataFrame(carts,columns=["cart_id","session_id","customer_id","created_at","state"]),"cart_items":pd.DataFrame(cartitems,columns=["cart_item_id","cart_id","product_id","quantity","unit_price"]),"orders":pd.DataFrame(orders,columns=["order_id","session_id","customer_id","cart_id","ordered_at","status","total_amount","currency"]),"support_tickets":pd.DataFrame(tickets,columns=["ticket_id","session_id","customer_id","created_at","status","reason"]),"experiments":experiments,"experiment_assignments":pd.DataFrame(assignments),"journey_outcomes":pd.DataFrame(outcomes)}
+    tables["sessions"]["session_id"]=tables["sessions"]["session_id"].astype("category")
     for name,df in tables.items():
         df=df.reindex(sorted(df.columns),axis=1).sort_values(df.columns[0],kind="stable").reset_index(drop=True); tables[name]=df
         df.to_csv(out/f"{name}.csv",index=False,lineterminator="\n",na_rep="")
@@ -197,7 +200,14 @@ def generate(config: Config = Config(), output: str | Path = "data", database_ur
             missing=set(tables)-set(inspect(conn).get_table_names())
             if missing: raise ValueError(f"Apply schema.sql before loading generated rows; missing tables: {sorted(missing)}")
             for name in ("customers","pages","products","experiments","sessions","journey_events","carts","cart_items","orders","support_tickets","experiment_assignments","journey_outcomes"):
-                tables[name].to_sql(name,conn,if_exists="append",index=False,method="multi",chunksize=min(config.chunk_size,50))
+                frame=tables[name]
+                if name=="journey_events":
+                    for offset in range(0,len(frame),config.chunk_size):
+                        batch=frame.iloc[offset:offset+config.chunk_size].copy()
+                        batch["event_properties"]=batch["event_properties"].map(json.loads)
+                        batch.to_sql(name,conn,if_exists="append",index=False,method="multi",chunksize=min(config.chunk_size,50),dtype={"event_properties":JSONB})
+                else:
+                    frame.to_sql(name,conn,if_exists="append",index=False,method="multi",chunksize=min(config.chunk_size,50))
     return {"tables":tables,"validation":validation,"ground_truth":ground_df,"detections":pred}
 
 

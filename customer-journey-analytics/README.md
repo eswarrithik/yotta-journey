@@ -19,13 +19,13 @@ The optional PostgreSQL connection setting is shown blank in `.env.example`. For
 
 ## Generate data
 
-Starter profile (seed `20261022`, 100 sessions, approximately 2,000 events):
+Starter profile (seed `20261022`, 100 sessions, configured to emit exactly 2,000 events including injected duplicate evidence):
 
 ```powershell
 python -m yottajourney.pipeline --output data --seed 20261022
 ```
 
-Configured full profile (100,000 sessions, approximately 2,000,000 events):
+Configured full profile (100,000 sessions and a 2,000,000-event generation target, including injected duplicate evidence):
 
 ```powershell
 python -m yottajourney.pipeline --full --output data-full --seed 20261022

@@ -56,6 +56,12 @@ Verify that the generated report says PASS, contains exactly 100 sessions and 2,
 @'
 import hashlib, json
 from pathlib import Path
+def sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 p = Path("data-starter")
 report = json.loads((p / "validation_report.json").read_text())
 manifest = json.loads((p / "reproducibility.json").read_text())
@@ -68,7 +74,7 @@ assert all(report["checks"].values()), report["errors"]
 assert report["anomaly_evaluation"]["false_positives"] == 0
 assert report["anomaly_evaluation"]["false_negatives"] == 0
 for name, expected in manifest["sha256"].items():
-    actual = hashlib.sha256((p / name).read_bytes()).hexdigest()
+    actual = sha256(p / name)
     assert actual == expected, name
 print(json.dumps({"status": "PASS", "entity_row_counts": report["entity_row_counts"], "anomaly_evaluation": report["anomaly_evaluation"], "sha256_files_verified": len(manifest["sha256"])}, indent=2))
 '@ | python -
@@ -93,6 +99,12 @@ After that command completes, independently verify the expected full counts, str
 @'
 import hashlib, json
 from pathlib import Path
+def sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 p = Path("data-full")
 report = json.loads((p / "validation_report.json").read_text())
 manifest = json.loads((p / "reproducibility.json").read_text())
@@ -103,7 +115,7 @@ assert report["checks"]["event_volume_target"]
 assert report["checks"]["events_per_session_target"]
 assert all(report["checks"].values()), report["errors"]
 for name, expected in manifest["sha256"].items():
-    assert hashlib.sha256((p / name).read_bytes()).hexdigest() == expected, name
+    assert sha256(p / name) == expected, name
 print(json.dumps({"status": "PASS", "entity_row_counts": report["entity_row_counts"], "sha256_files_verified": len(manifest["sha256"])}, indent=2))
 '@ | python -
 ```
